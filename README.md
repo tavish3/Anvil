@@ -125,7 +125,7 @@ A full-stack job board platform where **Employers** can post and manage job list
 
 ```bash
 # Navigate to project directory
-cd "Job Board"
+cd Anvil
 
 # Install backend dependencies
 cd backend
@@ -377,7 +377,7 @@ docker compose down
 ## Project Structure
 
 ```
-job-board/
+Anvil/
 ├── backend/
 │   ├── prisma/
 │   │   ├── schema.prisma          # Database schema
