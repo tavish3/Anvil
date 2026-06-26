@@ -28,7 +28,7 @@ A full-stack job board platform where **Employers** can post and manage job list
 - **Email Queue**: BullMQ + Redis for async email notifications with retry logic
 - **In-App Notifications**: Real-time notification system with polling
 - **Role-Based Access Control**: Separate permissions for employers and applicants
-- **Docker Support**: Containerized PostgreSQL, Redis, backend, and frontend
+- **Docker Support**: Containerized PostgreSQL and Redis for local development
 - **API Validation**: Zod schemas for request validation
 - **Responsive UI**: Modern React frontend with Tailwind CSS
 
@@ -220,10 +220,7 @@ The application will be available at:
 The project includes a `docker-compose.yml` for easy infrastructure setup.
 
 ```bash
-# Start PostgreSQL and Redis only (for local backend development)
-docker compose up -d postgres redis
-
-# Start everything (including backend and frontend containers)
+# Start PostgreSQL and Redis (for local backend development)
 docker compose up -d
 
 # View logs
@@ -233,24 +230,12 @@ docker compose logs -f
 docker compose down
 ```
 
-### Building Docker Images
-
-```bash
-# Build backend image
-docker build -t job-board-backend ./backend
-
-# Build frontend image
-docker build -t job-board-frontend ./frontend
-```
-
 ### Docker Services
 
 | Service | Description | Ports |
 |---------|-------------|-------|
 | postgres | PostgreSQL database | 5432 |
-| redis | Redis for caching and queues | 6379 |
-| backend | Node.js Express API | 5000 |
-| frontend | React app with Nginx | 80 |
+| redis | Redis for caching and queues | 6380 (host) → 6379 (container) |
 
 ---
 
