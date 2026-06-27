@@ -455,13 +455,35 @@ Anvil/
 
 ## Screenshots
 
-- Job browsing page with filters
-- Job detail and application form
-- Applicant dashboard
-- Employer listings management
-- Application pipeline view
-- Employer dashboard
-- Notification bell and dropdown
+### Job browsing page with filters
+![Job browsing page with filters](screenshots/browseJobs.png)
+
+### Job details
+![Job details](screenshots/jobDetails.png)
+
+### Job application form
+![Job application form](screenshots/applyToJob.png)
+
+### Applicant's applications page
+![Applicant's application page](screenshots/myApplications.png)
+
+
+### Employers's listings page
+![Employer's Listing Page](screenshots/myListings.png)
+
+
+### Employer listings management
+![Listing Applicants](screenshots/listingApplicants.png)
+
+![View Application](screenshots/applicationView.png)
+
+### Employer dashboard
+![Employer Dashboard](screenshots/dashboard.png)
+
+### Status update notifications
+![Applicant Notifications](screenshots/applicantNotifications.png)
+
+![Employer Notifications](screenshots/employerNotifications.png)
 
 ---
 
