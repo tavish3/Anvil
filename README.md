@@ -360,20 +360,6 @@ docker compose down
 
 ---
 
-## Screenshots
-
-*Add screenshots of the application here to showcase the UI.*
-
-- Job browsing page with filters
-- Job detail and application form
-- Applicant dashboard
-- Employer listings management
-- Application pipeline view
-- Employer dashboard
-- Notification bell and dropdown
-
----
-
 ## Project Structure
 
 ```
@@ -436,6 +422,8 @@ Anvil/
 │   ├── Dockerfile
 │   └── package.json
 │
+├── screenshots/
+│
 ├── docker-compose.yml
 └── README.md
 ```
@@ -462,6 +450,18 @@ Anvil/
 ### Soft Delete
 - Jobs are soft-deleted (isDeleted flag) rather than hard-deleted
 - This preserves data integrity and allows for recovery
+
+---
+
+## Screenshots
+
+- Job browsing page with filters
+- Job detail and application form
+- Applicant dashboard
+- Employer listings management
+- Application pipeline view
+- Employer dashboard
+- Notification bell and dropdown
 
 ---
 
