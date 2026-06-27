@@ -61,10 +61,10 @@ A full-stack job board platform where **Employers** can post and manage job list
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                         Frontend (React)                        │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐            │
-│  │   Pages     │  │ Components  │  │   Hooks     │            │
-│  │  (Router)   │  │  (UI Lib)   │  │ (TanStack)  │            │
-│  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘            │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐              │
+│  │   Pages     │  │ Components  │  │   Hooks     │              │
+│  │  (Router)   │  │  (UI Lib)   │  │ (TanStack)  │              │
+│  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘              │
 │         │                │                │                     │
 │         └────────────────┴────────────────┘                     │
 │                          │                                      │
@@ -73,23 +73,23 @@ A full-stack job board platform where **Employers** can post and manage job list
 └──────────────────────────┼──────────────────────────────────────┘
                            │ HTTP (Axios)
 ┌──────────────────────────┼──────────────────────────────────────┐
-│                    Backend (Express)                             │
+│                    Backend (Express)                            │
 │                          │                                      │
-│  ┌───────────────────────┼───────────────────────┐             │
-│  │                       │                       │             │
-│  ▼                       ▼                       ▼             │
-│ ┌─────────┐          ┌─────────┐          ┌─────────┐          │
-│ │  Auth   │          │  Jobs   │          │   Apps  │          │
-│ │ Module  │          │ Module  │          │ Module  │          │
-│ └────┬────┘          └────┬────┘          └────┬────┘          │
+│  ┌───────────────────────┼───────────────────────┐              │
+│  │                       │                       │              │
+│  ▼                       ▼                       ▼              │
+│ ┌─────────┐          ┌─────────┐          ┌─────────┐           │
+│ │  Auth   │          │  Jobs   │          │   Apps  │           │
+│ │ Module  │          │ Module  │          │ Module  │           │
+│ └────┬────┘          └────┬────┘          └────┬────┘           │
 │      │                    │                    │                │
 │      └────────────────────┴────────────────────┘                │
-│                           │                                      │
-│                    ┌──────┴──────┐                               │
-│                    │  Middleware │                               │
-│                    │ (Auth, RBAC)│                               │
-│                    └──────┬──────┘                               │
-└───────────────────────────┼──────────────────────────────────────┘
+│                           │                                     │
+│                    ┌──────┴──────┐                              │
+│                    │  Middleware │                              │
+│                    │ (Auth, RBAC)│                              │
+│                    └──────┬──────┘                              │
+└───────────────────────────┼─────────────────────────────────────┘
                             │
         ┌───────────────────┼───────────────────┐
         │                   │                   │
@@ -479,11 +479,6 @@ Anvil/
 
 ### Employer dashboard
 ![Employer Dashboard](screenshots/dashboard.png)
-
-### Status update notifications
-![Applicant Notifications](screenshots/applicantNotifications.png)
-
-![Employer Notifications](screenshots/employerNotifications.png)
 
 ---
 
