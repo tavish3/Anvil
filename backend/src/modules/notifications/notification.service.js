@@ -1,12 +1,6 @@
 const prisma = require('../../config/db');
 const ApiError = require('../../utils/ApiError');
 
-/**
- * Create a notification for a user
- * @param {string} userId - The user ID to notify
- * @param {string} message - The notification message
- * @returns {Promise<Notification>}
- */
 const createNotification = async (userId, message) => {
   return await prisma.notification.create({
     data: {
@@ -16,11 +10,6 @@ const createNotification = async (userId, message) => {
   });
 };
 
-/**
- * Get all notifications for a user
- * @param {string} userId - The user ID
- * @returns {Promise<Notification[]>}
- */
 const getNotifications = async (userId) => {
   return await prisma.notification.findMany({
     where: { userId },
@@ -29,12 +18,6 @@ const getNotifications = async (userId) => {
   });
 };
 
-/**
- * Mark a notification as read
- * @param {string} notificationId - The notification ID
- * @param {string} userId - The user ID (for ownership verification)
- * @returns {Promise<Notification>}
- */
 const markAsRead = async (notificationId, userId) => {
   const notification = await prisma.notification.findUnique({
     where: { id: notificationId },
@@ -54,11 +37,6 @@ const markAsRead = async (notificationId, userId) => {
   });
 };
 
-/**
- * Mark all notifications as read for a user
- * @param {string} userId - The user ID
- * @returns {Promise<{count: number}>}
- */
 const markAllAsRead = async (userId) => {
   const result = await prisma.notification.updateMany({
     where: {
@@ -71,11 +49,6 @@ const markAllAsRead = async (userId) => {
   return { count: result.count };
 };
 
-/**
- * Get unread count for a user
- * @param {string} userId - The user ID
- * @returns {Promise<number>}
- */
 const getUnreadCount = async (userId) => {
   return await prisma.notification.count({
     where: {
