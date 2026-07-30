@@ -373,8 +373,7 @@ Anvil/
 │   │   ├── config/
 │   │   │   ├── db.js              # Prisma client
 │   │   │   ├── redis.js           # Redis client
-│   │   │   ├── cloudinary.js      # Cloudinary config
-│   │   │   └── env.js             # Environment validation
+│   │   │   └── cloudinary.js      # Cloudinary config
 │   │   ├── middlewares/
 │   │   │   ├── auth.js            # JWT verification
 │   │   │   ├── requireRole.js     # Role-based access control
@@ -415,7 +414,6 @@ Anvil/
 │   │   ├── store/                 # Zustand stores
 │   │   ├── hooks/                 # Custom hooks
 │   │   ├── assets/                # Static assets
-│   │   ├── App.jsx
 │   │   └── main.jsx
 │   ├── public/
 │   ├── .env
