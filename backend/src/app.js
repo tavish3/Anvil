@@ -4,6 +4,8 @@ const cookieParser = require('cookie-parser');
 require('dotenv').config();
 
 const app = express();
+const hops = parseInt(process.env.TRUST_PROXY, 10);
+if (hops > 0) app.set('trust proxy', hops);
 
 // Middleware
 app.use(cors({

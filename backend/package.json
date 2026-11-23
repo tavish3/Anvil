@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "nodemon server.js",
     "start": "node server.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node --test",
+    "ai:smoke": "node scripts/ai-smoke.js",
+    "ai:backfill": "node scripts/ai-backfill.js"
   },
   "prisma": {
     "seed": "node prisma/seed.js"
@@ -14,9 +16,15 @@
   "keywords": [],
   "author": "",
   "license": "ISC",
+  "engines": {
+    "node": ">=22.3.0"
+  },
   "type": "commonjs",
   "dependencies": {
     "@faker-js/faker": "^10.5.0",
+    "@langchain/core": "^1.5.0",
+    "@langchain/langgraph": "^1.7.5",
+    "@langchain/openai": "^1.8.5",
     "@prisma/client": "^5.22.0",
     "bcryptjs": "^3.0.3",
     "bullmq": "^5.79.1",
@@ -29,6 +37,7 @@
     "jsonwebtoken": "^9.0.3",
     "multer": "^2.2.0",
     "nodemailer": "^9.0.1",
+    "pdf-parse": "^2.4.5",
     "prisma": "^5.22.0",
     "zod": "^4.4.3"
   },
