@@ -8,6 +8,7 @@ const {
   truncate,
   wordCount,
   escapeLike,
+  formatEmbeddingInput,
   buildJobDocument,
   buildResumeEmbeddingText,
 } = require('../../src/ai/text');
@@ -63,6 +64,29 @@ test('wordCount counts whitespace-separated tokens', () => {
 test('escapeLike escapes backslash, percent and underscore', () => {
   assert.equal(escapeLike('100%_\\x'), '100\\%\\_\\\\x');
   assert.equal(escapeLike('plain'), 'plain');
+});
+
+test('formatEmbeddingInput for gemini-embedding-2 uses text prefixes', () => {
+  const query = formatEmbeddingInput({ model: 'gemini-embedding-2', role: 'query', text: 'hello' });
+  assert.equal(query.contents, 'task: search result | query: hello');
+  assert.equal(query.taskType, undefined);
+
+  const doc = formatEmbeddingInput({ model: 'gemini-embedding-2', role: 'document', text: 'job text', title: 'Engineer' });
+  assert.equal(doc.contents, 'title: Engineer | text: job text');
+  assert.equal(doc.taskType, undefined);
+
+  const noTitle = formatEmbeddingInput({ model: 'gemini-embedding-2', role: 'document', text: 'job text' });
+  assert.equal(noTitle.contents, 'title: none | text: job text');
+});
+
+test('formatEmbeddingInput for gemini-embedding-001 uses taskType', () => {
+  const query = formatEmbeddingInput({ model: 'gemini-embedding-001', role: 'query', text: 'hello' });
+  assert.equal(query.contents, 'hello');
+  assert.equal(query.taskType, 'RETRIEVAL_QUERY');
+
+  const doc = formatEmbeddingInput({ model: 'gemini-embedding-001', role: 'document', text: 'job text', title: 'Engineer' });
+  assert.equal(doc.contents, 'job text');
+  assert.equal(doc.taskType, 'RETRIEVAL_DOCUMENT');
 });
 
 test('buildJobDocument renders all sections', () => {

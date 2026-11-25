@@ -1,5 +1,5 @@
 const { runAi } = require('../errors');
-const { getChatModel, structured } = require('../llm');
+const { getChatModel, structured, callOptions } = require('../llm');
 const { jobInsightsPrompt } = require('../prompts');
 const { JobInsightsSchema } = require('../schemas');
 const { normalizeJobInsights } = require('../normalize');
@@ -17,7 +17,7 @@ function getChain() {
 
 async function generateJobInsights(document, { signal } = {}) {
   return runAi(async () => {
-    const raw = await getChain().invoke({ document }, { signal });
+    const raw = await getChain().invoke({ document }, callOptions(signal));
     return normalizeJobInsights(raw);
   });
 }

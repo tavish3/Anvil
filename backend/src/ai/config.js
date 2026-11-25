@@ -1,68 +1,58 @@
-require('dotenv').config();
-
+require('dotenv').config({ quiet: true });
 const { z } = require('zod');
 
-const REASONING_EFFORTS = ['none', 'low', 'medium', 'high'];
+const THINKING_LEVELS = ['minimal', 'low', 'medium', 'high'];
+
+// An empty string in .env (KEY=) means "use the default" for every setting except GEMINI_THINKING_LEVEL.
+const emptyToUndefined = (v) => (typeof v === 'string' && v.trim() === '' ? undefined : v);
+const num = (schema, def) => z.preprocess(emptyToUndefined, schema.default(def));
+const str = (def) => z.preprocess(emptyToUndefined, z.string().default(def));
 
 const envSchema = z.object({
-  OPENAI_API_KEY: z.string().optional(),
-  AI_ENABLED: z.enum(['true', 'false']).default('true'),
-  OPENAI_CHAT_MODEL: z.string().min(1).default('gpt-6-luna'),
-  OPENAI_WRITING_MODEL: z.string().default(''),
-  OPENAI_EMBEDDING_MODEL: z.string().min(1).default('text-embedding-3-small'),
-  OPENAI_REASONING_EFFORT: z.string().optional(),
-  AI_REQUEST_TIMEOUT_MS: z.coerce.number().int().positive().default(60000),
-  AI_SEARCH_MIN_SCORE: z.coerce.number().min(0).max(1).default(0.15),
-  AI_DAILY_REQUEST_CAP: z.coerce.number().int().nonnegative().default(2000),
-  AI_WORKER_CONCURRENCY: z.coerce.number().int().positive().default(2),
+  AI_ENABLED: z.preprocess(emptyToUndefined, z.enum(['true', 'false']).default('true')),
+  GEMINI_API_KEY: z.string().default(''),
+  GOOGLE_API_KEY: z.string().default(''),
+  GEMINI_CHAT_MODEL: str('gemini-3.5-flash-lite'),
+  GEMINI_WRITING_MODEL: z.string().default(''),
+  GEMINI_EMBEDDING_MODEL: z.preprocess(emptyToUndefined, z.enum(['gemini-embedding-2', 'gemini-embedding-001']).default('gemini-embedding-2')),
+  GEMINI_THINKING_LEVEL: z.string().default('low'), // absent => 'low'; present-but-empty => not sent
+  AI_REQUEST_TIMEOUT_MS: num(z.coerce.number().int().positive(), 60000),
+  AI_SEARCH_MIN_SCORE: num(z.coerce.number().min(-1).max(1), 0),
+  AI_DAILY_REQUEST_CAP: num(z.coerce.number().int().positive(), 100),
+  AI_WORKER_CONCURRENCY: num(z.coerce.number().int().positive(), 1),
+  AI_WORKER_RATE_PER_MINUTE: num(z.coerce.number().int().positive(), 6),
 });
 
-function invalidEnv(name, detail) {
-  throw new Error(`Invalid environment variable ${name}: ${detail}`);
-}
+function buildConfig(env) {
+  const parsed = envSchema.safeParse(env);
+  if (!parsed.success) {
+    const issue = parsed.error.issues[0];
+    throw new Error(`Invalid AI configuration (${issue.path.join('.') || 'env'}): ${issue.message}`);
+  }
+  const e = parsed.data;
 
-function parseReasoningEffort(raw) {
-  // Variable absent => 'low'; present-but-empty => undefined (parameter not sent);
-  // otherwise must be one of none|low|medium|high.
-  if (raw === undefined) return 'low';
-  if (raw === '') return undefined;
-  if (REASONING_EFFORTS.includes(raw)) return raw;
-  invalidEnv('OPENAI_REASONING_EFFORT', `expected one of ${REASONING_EFFORTS.join(', ')}, got "${raw}"`);
-}
-
-function buildConfig(env = {}) {
-  // Treat empty strings as "unset" so .env.example-style empty values fall back
-  // to defaults — except OPENAI_REASONING_EFFORT, where empty has its own meaning.
-  const normalized = { ...env };
-  for (const key of Object.keys(normalized)) {
-    if (normalized[key] === '' && key !== 'OPENAI_REASONING_EFFORT') {
-      normalized[key] = undefined;
-    }
+  const level = e.GEMINI_THINKING_LEVEL.trim().toLowerCase();
+  if (level && !THINKING_LEVELS.includes(level)) {
+    throw new Error(`Invalid AI configuration (GEMINI_THINKING_LEVEL): expected one of ${THINKING_LEVELS.join(', ')} or empty`);
   }
 
-  const result = envSchema.safeParse(normalized);
-  if (!result.success) {
-    const issue = result.error.issues[0];
-    invalidEnv(issue.path.join('.') || '(unknown)', issue.message);
-  }
-  const parsed = result.data;
-
-  const apiKey = (parsed.OPENAI_API_KEY || '').trim();
-  const enabled = parsed.AI_ENABLED === 'true';
-  const chatModel = parsed.OPENAI_CHAT_MODEL;
+  const apiKey = (e.GEMINI_API_KEY || e.GOOGLE_API_KEY || '').trim();
+  const enabled = e.AI_ENABLED === 'true';
+  const chatModel = e.GEMINI_CHAT_MODEL;
 
   return {
     enabled,
     active: enabled && apiKey.length > 0,
     apiKey,
     chatModel,
-    writingModel: parsed.OPENAI_WRITING_MODEL || chatModel,
-    embeddingModel: parsed.OPENAI_EMBEDDING_MODEL,
-    reasoningEffort: parseReasoningEffort(parsed.OPENAI_REASONING_EFFORT),
-    requestTimeoutMs: parsed.AI_REQUEST_TIMEOUT_MS,
-    searchMinScore: parsed.AI_SEARCH_MIN_SCORE,
-    dailyRequestCap: parsed.AI_DAILY_REQUEST_CAP,
-    workerConcurrency: parsed.AI_WORKER_CONCURRENCY,
+    writingModel: e.GEMINI_WRITING_MODEL.trim() || chatModel,
+    embeddingModel: e.GEMINI_EMBEDDING_MODEL,
+    thinkingLevel: level || undefined,
+    requestTimeoutMs: e.AI_REQUEST_TIMEOUT_MS,
+    searchMinScore: e.AI_SEARCH_MIN_SCORE,
+    dailyRequestCap: e.AI_DAILY_REQUEST_CAP,
+    workerConcurrency: e.AI_WORKER_CONCURRENCY,
+    workerRatePerMinute: e.AI_WORKER_RATE_PER_MINUTE,
   };
 }
 

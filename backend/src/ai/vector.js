@@ -12,4 +12,13 @@ function toVectorLiteral(arr) {
   return `[${arr.join(',')}]`;
 }
 
-module.exports = { toVectorLiteral };
+// Scales a vector to unit length (a zero vector is returned unchanged, as a copy).
+function l2Normalize(vec) {
+  let sum = 0;
+  for (const v of vec) sum += v * v;
+  const norm = Math.sqrt(sum);
+  if (!norm) return vec.slice();
+  return vec.map((v) => v / norm);
+}
+
+module.exports = { toVectorLiteral, l2Normalize };

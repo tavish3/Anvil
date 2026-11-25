@@ -104,6 +104,19 @@ function buildResumeEmbeddingText(profile, rawText) {
   return lines.join('\n');
 }
 
+// Pure: how text is presented to the embedding model for a given role.
+//  gemini-embedding-2  -> no taskType; the role is expressed with text prefixes
+//  gemini-embedding-001 -> raw text + taskType
+function formatEmbeddingInput({ model, role, text, title }) {
+  if (/embedding-2/.test(model)) {
+    return {
+      contents: role === 'query' ? `task: search result | query: ${text}` : `title: ${title || 'none'} | text: ${text}`,
+      taskType: undefined,
+    };
+  }
+  return { contents: text, taskType: role === 'query' ? 'RETRIEVAL_QUERY' : 'RETRIEVAL_DOCUMENT' };
+}
+
 module.exports = {
   sha256,
   cleanText,
@@ -111,6 +124,7 @@ module.exports = {
   truncate,
   wordCount,
   escapeLike,
+  formatEmbeddingInput,
   buildJobDocument,
   buildResumeEmbeddingText,
 };

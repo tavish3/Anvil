@@ -1,48 +1,69 @@
-const ApiError = require('../utils/ApiError');
+const { GoogleGenAI } = require('@google/genai');
 const { aiConfig } = require('./config');
 const { EMBEDDING_DIMENSIONS, EMBEDDING_INPUT_MAX_CHARS, CACHE_TTL_SECONDS } = require('./constants');
-const { getEmbeddings } = require('./llm');
+const { cleanText, truncate, sha256, formatEmbeddingInput } = require('./text');
+const { l2Normalize } = require('./vector');
 const { getJson, setJson } = require('./cache');
-const { sha256, truncate } = require('./text');
-const { runAi } = require('./errors');
 
-function prepareInput(text) {
-  if (typeof text !== 'string' || text.trim().length === 0) {
-    throw new ApiError(400, 'Cannot embed empty input.');
-  }
-  return truncate(text, EMBEDDING_INPUT_MAX_CHARS);
+let client;
+const getClient = () => {
+  if (!client) client = new GoogleGenAI({ apiKey: aiConfig.apiKey });
+  return client;
+};
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// Retry only transient failures: HTTP 500/503/504 and network errors. Never 429 (quota) and never aborts/timeouts.
+function isTransient(err) {
+  if (err?.name === 'AbortError' || err?.name === 'TimeoutError') return false;
+  const code = err?.status ?? err?.statusCode;
+  if ([500, 503, 504].includes(code)) return true;
+  return err?.name === 'TypeError' && /fetch failed/i.test(String(err?.message));
 }
 
-function assertEmbedding(vec) {
-  const valid = Array.isArray(vec)
-    && vec.length === EMBEDDING_DIMENSIONS
-    && vec.every((v) => typeof v === 'number' && Number.isFinite(v));
-  if (!valid) {
-    throw new ApiError(502, 'The AI service returned an invalid embedding.');
+async function embed({ role, text, title, signal }) {
+  const input = truncate(cleanText(text), EMBEDDING_INPUT_MAX_CHARS);
+  if (!input) throw new Error('Cannot embed empty text');
+
+  const { contents, taskType } = formatEmbeddingInput({ model: aiConfig.embeddingModel, role, text: input, title });
+  const signals = [AbortSignal.timeout(aiConfig.requestTimeoutMs)];
+  if (signal) signals.push(signal);
+  const config = { outputDimensionality: EMBEDDING_DIMENSIONS, abortSignal: AbortSignal.any(signals) };
+  if (taskType) config.taskType = taskType;
+
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      // `contents` MUST be a single string: an array is aggregated into ONE embedding by gemini-embedding-2.
+      const res = await getClient().models.embedContent({ model: aiConfig.embeddingModel, contents, config });
+      const values = res?.embeddings?.[0]?.values;
+      if (!Array.isArray(values) || values.length !== EMBEDDING_DIMENSIONS) {
+        throw new Error(`Unexpected embedding response (expected ${EMBEDDING_DIMENSIONS} values)`);
+      }
+      return l2Normalize(values);
+    } catch (err) {
+      if (attempt >= 2 || !isTransient(err)) throw err;
+      await sleep(1000 * 2 ** attempt);
+    }
   }
-  return vec;
 }
 
-async function embedDocument(text) {
-  return runAi(async () => {
-    const input = prepareInput(text);
-    const vec = await getEmbeddings().embedQuery(input);
-    return assertEmbedding(vec);
-  });
+// Document role (jobs). Never cached.
+function embedDocument(text, { title, signal } = {}) {
+  return embed({ role: 'document', text, title, signal });
 }
 
-async function embedQuery(text) {
-  const input = prepareInput(text);
-  const key = `ai:emb:${aiConfig.embeddingModel}:${sha256(input)}`;
-
-  const cached = await getJson(key);
-  if (Array.isArray(cached) && cached.length === EMBEDDING_DIMENSIONS) {
-    return cached;
+// Query role (search text, resumes). Cached in Redis unless { cache: false } (always use cache:false for resumes).
+async function embedQuery(text, { cache = true, signal } = {}) {
+  const input = truncate(cleanText(text), EMBEDDING_INPUT_MAX_CHARS);
+  if (!input) throw new Error('Cannot embed empty text');
+  const key = `ai:emb:${aiConfig.embeddingModel}:q:${sha256(input)}`;
+  if (cache) {
+    const hit = await getJson(key);
+    if (Array.isArray(hit) && hit.length === EMBEDDING_DIMENSIONS) return hit;
   }
-
-  const vec = await embedDocument(text);
-  await setJson(key, vec, CACHE_TTL_SECONDS.EMBEDDING);
-  return vec;
+  const vector = await embed({ role: 'query', text: input, signal });
+  if (cache) await setJson(key, vector, CACHE_TTL_SECONDS.EMBEDDING);
+  return vector;
 }
 
 module.exports = { embedDocument, embedQuery };

@@ -1,59 +1,42 @@
+const { ChatGoogle } = require('@langchain/google/node');
 const { aiConfig } = require('./config');
-const { EMBEDDING_DIMENSIONS } = require('./constants');
+const { EmptyModelOutputError } = require('./errors');
 
-let chatModel = null;
-let writingModel = null;
-let embeddings = null;
+let chatModel;
+let writingModel;
 
-function chatOptions(model) {
-  const options = {
-    model,
-    apiKey: aiConfig.apiKey,
-    maxRetries: 2,
-    timeout: aiConfig.requestTimeoutMs,
-  };
-  if (aiConfig.reasoningEffort) {
-    options.reasoning = { effort: aiConfig.reasoningEffort };
-  }
-  return options;
+function build(model) {
+  // NEVER pass temperature, timeout (ignored by ChatGoogle), endpoint, reasoningEffort or thinkingBudget.
+  const options = { model, apiKey: aiConfig.apiKey, platformType: 'gai', maxRetries: 2 };
+  if (aiConfig.thinkingLevel) options.thinkingLevel = aiConfig.thinkingLevel;
+  return new ChatGoogle(options);
 }
 
 function getChatModel() {
-  if (!chatModel) {
-    const { ChatOpenAI } = require('@langchain/openai');
-    chatModel = new ChatOpenAI(chatOptions(aiConfig.chatModel));
-  }
+  if (!chatModel) chatModel = build(aiConfig.chatModel);
   return chatModel;
 }
 
 function getWritingModel() {
-  if (!writingModel) {
-    if (aiConfig.writingModel === aiConfig.chatModel) {
-      return getChatModel();
-    }
-    const { ChatOpenAI } = require('@langchain/openai');
-    writingModel = new ChatOpenAI(chatOptions(aiConfig.writingModel));
-  }
+  if (aiConfig.writingModel === aiConfig.chatModel) return getChatModel();
+  if (!writingModel) writingModel = build(aiConfig.writingModel);
   return writingModel;
 }
 
-function getEmbeddings() {
-  if (!embeddings) {
-    const { OpenAIEmbeddings } = require('@langchain/openai');
-    embeddings = new OpenAIEmbeddings({
-      model: aiConfig.embeddingModel,
-      apiKey: aiConfig.apiKey,
-      dimensions: EMBEDDING_DIMENSIONS,
-      batchSize: 64,
-      maxRetries: 2,
-      timeout: aiConfig.requestTimeoutMs,
-    });
-  }
-  return embeddings;
+const structured = (model, schema, name) => model.withStructuredOutput(schema, { method: 'jsonSchema', name });
+
+// ChatGoogle ignores its `timeout` option, so EVERY invocation must carry an AbortSignal.
+function callOptions(signal) {
+  const signals = [AbortSignal.timeout(aiConfig.requestTimeoutMs)];
+  if (signal) signals.push(signal);
+  return { signal: AbortSignal.any(signals) };
 }
 
-function structured(model, schema, name) {
-  return model.withStructuredOutput(schema, { method: 'jsonSchema', strict: true, name });
+// `message.text` excludes thought-summary blocks (StringOutputParser does NOT - never use it with Gemini).
+function getText(message) {
+  const text = typeof message?.text === 'string' ? message.text.trim() : '';
+  if (!text) throw new EmptyModelOutputError();
+  return text;
 }
 
-module.exports = { getChatModel, getWritingModel, getEmbeddings, structured };
+module.exports = { getChatModel, getWritingModel, structured, callOptions, getText };

@@ -1,10 +1,11 @@
-// Live OpenAI smoke test (AI spec §18.1). Requires a real OPENAI_API_KEY.
+// Live Gemini smoke test (AI spec §18.1). Requires a real GEMINI_API_KEY.
 // Usage: npm run ai:smoke [-- --full]
 
 const assert = require('node:assert/strict');
 
 const { aiConfig } = require('../src/ai/config');
-const { embedQuery } = require('../src/ai/embeddings');
+const { embedQuery, embedDocument } = require('../src/ai/embeddings');
+const { getChatModel, getText, callOptions } = require('../src/ai/llm');
 const { buildJobDocument } = require('../src/ai/text');
 const { EMBEDDING_DIMENSIONS } = require('../src/ai/constants');
 const { parseSearchQuery } = require('../src/ai/chains/searchParser.chain');
@@ -49,13 +50,25 @@ JavaScript, Node.js, Express, PostgreSQL, Git, HTML, CSS`;
 const EXPERIENCE_LEVELS = ['INTERN', 'ENTRY', 'MID', 'SENIOR', 'LEAD', 'UNSPECIFIED'];
 const VERDICTS = ['STRONG_FIT', 'GOOD_FIT', 'PARTIAL_FIT', 'WEAK_FIT'];
 
+function assertUnitVector(vec) {
+  const norm = Math.sqrt(vec.reduce((sum, v) => sum + v * v, 0));
+  assert.ok(Math.abs(norm - 1) <= 0.01, `embedding norm ${norm} is not ~1`);
+}
+
 const checks = [
   {
     name: 'embeddings',
     run: async () => {
-      const vec = await embedQuery('hello');
-      assert.equal(vec.length, EMBEDDING_DIMENSIONS);
-      assert.ok(vec.every((v) => typeof v === 'number' && Number.isFinite(v)));
+      const [queryVec, docVec] = await Promise.all([
+        embedQuery('hello', { cache: false }),
+        embedDocument('a job text', { title: 'Engineer' }),
+      ]);
+      for (const vec of [queryVec, docVec]) {
+        assert.equal(vec.length, EMBEDDING_DIMENSIONS);
+        assert.ok(vec.every((v) => typeof v === 'number' && Number.isFinite(v)));
+        assertUnitVector(vec);
+      }
+      assert.notDeepEqual(queryVec, docVec);
     },
   },
   {
@@ -89,6 +102,14 @@ const checks = [
       assert.ok(VERDICTS.includes(analysis.verdict));
     },
   },
+  {
+    name: 'plain text',
+    run: async () => {
+      const message = await getChatModel().invoke('Reply with exactly the word OK.', callOptions());
+      const text = getText(message);
+      assert.ok(typeof text === 'string' && text.length > 0);
+    },
+  },
 ];
 
 async function cleanup() {
@@ -103,10 +124,13 @@ async function main() {
   }
 
   if (!aiConfig.active) {
-    console.error('AI is not active. Set AI_ENABLED=true and a valid OPENAI_API_KEY in backend/.env.');
+    console.error('AI is not active. Set AI_ENABLED=true and a valid GEMINI_API_KEY in backend/.env.');
     process.exitCode = 1;
     return;
   }
+
+  console.log(`chat model: ${aiConfig.chatModel}`);
+  console.log(`embedding model: ${aiConfig.embeddingModel}`);
 
   let failed = 0;
   for (const check of checks) {
@@ -116,7 +140,11 @@ async function main() {
       console.log(`PASS ${check.name} (${Date.now() - start}ms)`);
     } catch (err) {
       failed += 1;
-      console.log(`FAIL ${check.name} (${Date.now() - start}ms): ${err.message}`);
+      if (err?.status === 429 || err?.statusCode === 429) {
+        console.log(`FAIL ${check.name} (${Date.now() - start}ms): quota exceeded — wait a minute or check https://aistudio.google.com/rate-limit`);
+      } else {
+        console.log(`FAIL ${check.name} (${Date.now() - start}ms): ${err.message}`);
+      }
     }
   }
 
@@ -130,7 +158,11 @@ async function main() {
 
 main()
   .catch((err) => {
-    console.error('ai-smoke crashed:', err.message);
+    if (err?.status === 429 || err?.statusCode === 429) {
+      console.error('quota exceeded — wait a minute or check https://aistudio.google.com/rate-limit');
+    } else {
+      console.error('ai-smoke crashed:', err.message);
+    }
     process.exitCode = 1;
   })
   .finally(cleanup);

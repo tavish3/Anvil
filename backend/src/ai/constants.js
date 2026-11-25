@@ -1,6 +1,6 @@
 module.exports = {
   EMBEDDING_DIMENSIONS: 1536,
-  EMBEDDING_INPUT_MAX_CHARS: 24000,
+  EMBEDDING_INPUT_MAX_CHARS: 6000,   // ≈1.5k tokens: inside the limits of both Gemini embedding models
   JOB_DESCRIPTION_MAX_CHARS: 6000,
   RESUME_TEXT_MAX_CHARS: 20000,      // stored in DB
   RESUME_PROMPT_MAX_CHARS: 12000,    // sent to the LLM
@@ -13,9 +13,10 @@ module.exports = {
   COVER_LETTER_NOTES_MAX_CHARS: 500,
   MAX_REVISIONS: 1,                  // cover-letter revise cycles (§13)
   GRAPH_RECURSION_LIMIT: 15,
+  WORKER_RATE_LIMIT_PAUSE_MS: 60000, // minimum queue pause after a Gemini 429 (spec §9.2)
   GRAPH_TIMEOUT_MS: 90000,
   SYNC_REQUEST_TIMEOUT_MS: 45000,    // overall AbortSignal for single-call endpoints (search, fit)
-  PROMPT_VERSION: 'v1',              // bump to invalidate caches + regenerate insights on prompt changes
+  PROMPT_VERSION: 'v2',              // 'v1' = OpenAI era; bump to invalidate caches and regenerate insights
   CACHE_TTL_SECONDS: { EMBEDDING: 86400, QUERY_PARSE: 3600, FIT: 604800, TIPS: 604800 },
   FIT_BANDS: { STRONG_FIT: 75, GOOD_FIT: 55, PARTIAL_FIT: 35 },   // below PARTIAL_FIT ⇒ WEAK_FIT
   QUEUE_NAME: 'ai',

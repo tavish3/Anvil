@@ -1,5 +1,5 @@
 const { RESUME_PROMPT_MAX_CHARS } = require('../constants');
-const { getChatModel, structured } = require('../llm');
+const { getChatModel, structured, callOptions } = require('../llm');
 const { resumeProfilePrompt } = require('../prompts');
 const { ResumeProfileSchema } = require('../schemas');
 const { normalizeResumeProfile } = require('../normalize');
@@ -21,7 +21,7 @@ async function extractResumeProfile(resumeText, { signal } = {}) {
   return runAi(async () => {
     const raw = await getChain().invoke(
       { resume: truncate(resumeText, RESUME_PROMPT_MAX_CHARS) },
-      { signal }
+      callOptions(signal)
     );
     return normalizeResumeProfile(raw);
   });

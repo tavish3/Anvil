@@ -2,7 +2,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
 const ApiError = require('../../src/utils/ApiError');
-const { toApiError, runAi } = require('../../src/ai/errors');
+const { toApiError, runAi, isRateLimitError, getRetryDelayMs } = require('../../src/ai/errors');
 
 test('toApiError returns ApiError instances unchanged', () => {
   const original = new ApiError(422, 'custom');
@@ -22,14 +22,33 @@ test('toApiError maps aborts/timeouts to 504', () => {
   assert.equal(toApiError(msg).statusCode, 504);
 });
 
-test('toApiError maps 429 and insufficient_quota to 503', () => {
+test('toApiError maps 429 via statusCode (ChatGoogle) to 503', () => {
   const rateLimited = new Error('slow down');
+  rateLimited.statusCode = 429;
+  assert.equal(toApiError(rateLimited).statusCode, 503);
+  assert.equal(isRateLimitError(rateLimited), true);
+});
+
+test('toApiError maps 429 via status (@google/genai) to 503', () => {
+  const rateLimited = new Error('quota');
   rateLimited.status = 429;
   assert.equal(toApiError(rateLimited).statusCode, 503);
+  assert.equal(isRateLimitError(rateLimited), true);
+});
 
-  const quota = new Error('quota');
-  quota.code = 'insufficient_quota';
-  assert.equal(toApiError(quota).statusCode, 503);
+test('isRateLimitError detects RESOURCE_EXHAUSTED bodies', () => {
+  const bodyErr = new Error('x');
+  bodyErr.data = { error: { status: 'RESOURCE_EXHAUSTED' } };
+  assert.equal(isRateLimitError(bodyErr), true);
+
+  const plain = new Error('boom');
+  assert.equal(isRateLimitError(plain), false);
+});
+
+test('toApiError maps PromptBlockedError to 422', () => {
+  const blocked = new Error('prompt blocked');
+  blocked.name = 'PromptBlockedError';
+  assert.equal(toApiError(blocked).statusCode, 422);
 });
 
 test('toApiError maps everything else to 502', () => {
@@ -39,9 +58,28 @@ test('toApiError maps everything else to 502', () => {
 });
 
 test('toApiError messages are friendly and leak nothing', () => {
-  const apiErr = toApiError(new Error('sk-secret-key-invalid'));
+  const apiErr = toApiError(new Error('AIza-secret-key-invalid'));
   assert.equal(apiErr.message, 'The AI service failed to respond. Please try again.');
-  assert.ok(!apiErr.message.includes('sk-secret'));
+  assert.ok(!apiErr.message.includes('AIza-secret'));
+});
+
+test('getRetryDelayMs reads RetryInfo details', () => {
+  const err = new Error('quota');
+  err.status = 429;
+  err.data = {
+    error: {
+      status: 'RESOURCE_EXHAUSTED',
+      details: [
+        { '@type': 'type.googleapis.com/google.rpc.RetryInfo', retryDelay: '12.5s' },
+      ],
+    },
+  };
+  assert.equal(getRetryDelayMs(err), 12500);
+
+  const noDetails = new Error('quota');
+  noDetails.data = { error: { status: 'RESOURCE_EXHAUSTED' } };
+  assert.equal(getRetryDelayMs(noDetails), null);
+  assert.equal(getRetryDelayMs(new Error('x')), null);
 });
 
 test('runAi returns fn result and converts thrown errors', async () => {

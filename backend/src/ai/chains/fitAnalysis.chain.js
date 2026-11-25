@@ -1,6 +1,7 @@
 const { PROMPT_VERSION, CACHE_TTL_SECONDS, RESUME_PROMPT_MAX_CHARS } = require('../constants');
+const { aiConfig } = require('../config');
 const { getJson, setJson } = require('../cache');
-const { getChatModel, structured } = require('../llm');
+const { getChatModel, structured, callOptions } = require('../llm');
 const { fitAnalysisPrompt } = require('../prompts');
 const { FitAnalysisSchema } = require('../schemas');
 const { normalizeFitAnalysis } = require('../normalize');
@@ -25,7 +26,7 @@ async function analyzeFit({ document, resumeText, signal } = {}) {
         document,
         resume: truncate(resumeText, RESUME_PROMPT_MAX_CHARS),
       },
-      { signal }
+      callOptions(signal)
     );
     return normalizeFitAnalysis(raw);
   });
@@ -34,7 +35,7 @@ async function analyzeFit({ document, resumeText, signal } = {}) {
 async function getFitAnalysis({ job, employerName, resume, signal } = {}) {
   const document = buildJobDocument(job, employerName);
   const jobDocHash = sha256(document);
-  const cacheKey = `ai:fit:${PROMPT_VERSION}:${resume.textHash}:${jobDocHash}`;
+  const cacheKey = `ai:fit:${PROMPT_VERSION}:${aiConfig.chatModel}:${resume.textHash}:${jobDocHash}`;
 
   const cached = await getJson(cacheKey);
   if (cached) return { analysis: cached, cached: true };
