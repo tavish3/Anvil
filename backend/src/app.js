@@ -29,6 +29,7 @@ app.use('/api/applications', require('./modules/applications/application.routes'
 app.use('/api/dashboard', require('./modules/dashboard/dashboard.routes'));
 app.use('/api/notifications', require('./modules/notifications/notification.routes'));
 app.use('/api/ai', require('./modules/ai/ai.routes'));
+app.use('/api/resumes', require('./modules/resumes/resume.routes'));
 
 // 404 handler
 app.use((req, res) => {

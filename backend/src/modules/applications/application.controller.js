@@ -6,9 +6,10 @@ const handleApplyToJob = asyncHandler(async (req, res) => {
   const { jobId } = req.params;
   const applicantId = req.user.userId;
   const { coverLetter } = req.body;
-  const resumeBuffer = req.file.buffer;
+  const resumeBuffer = req.file ? req.file.buffer : undefined;
+  const useSavedResume = req.body?.useSavedResume === 'true';
 
-  const application = await applyToJob(applicantId, jobId, resumeBuffer, coverLetter);
+  const application = await applyToJob(applicantId, jobId, resumeBuffer, coverLetter, { useSavedResume });
 
   res.status(201).json(
     new ApiResponse(201, application, 'Application submitted successfully')

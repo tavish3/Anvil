@@ -4,7 +4,7 @@ const uploadToCloudinary = require('../../utils/uploadToCloudinary');
 const emailQueue = require('../../queues/email.queue');
 const { createNotification } = require('../notifications/notification.service');
 
-const applyToJob = async (applicantId, jobId, resumeBuffer, coverLetter) => {
+const applyToJob = async (applicantId, jobId, resumeBuffer, coverLetter, { useSavedResume = false } = {}) => {
   // Check job exists, not deleted, deadline not passed
   const job = await prisma.job.findFirst({
     where: {
@@ -33,8 +33,20 @@ const applyToJob = async (applicantId, jobId, resumeBuffer, coverLetter) => {
     throw new ApiError(409, 'You have already applied to this job');
   }
 
-  // Upload resume PDF to Cloudinary
-  const resumeUrl = await uploadToCloudinary(resumeBuffer, 'job-board/resumes');
+  // Resolve the resume: an uploaded file always wins; otherwise the applicant's
+  // saved resume may be reused; with neither, applying is not possible.
+  let resumeUrl;
+  if (resumeBuffer) {
+    resumeUrl = await uploadToCloudinary(resumeBuffer, 'job-board/resumes');
+  } else if (useSavedResume) {
+    const savedResume = await prisma.resume.findUnique({ where: { userId: applicantId } });
+    if (!savedResume) {
+      throw new ApiError(400, 'No saved resume found. Please upload a resume.');
+    }
+    resumeUrl = savedResume.fileUrl;
+  } else {
+    throw new ApiError(400, 'Resume is required');
+  }
 
   // Create application with status APPLIED
   const application = await prisma.application.create({
