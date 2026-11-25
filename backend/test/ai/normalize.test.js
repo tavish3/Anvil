@@ -32,12 +32,10 @@ test('normalizeJobInsights clamps lists and defaults bad experienceLevel', () =>
   const raw = {
     summary: 's'.repeat(500),
     experienceLevel: 'WIZARD',
-    highlights: {
-      responsibilities: ['a', 'A', 'b'],
-      requirements: Array.from({ length: 10 }, (_, i) => `req${i}`),
-      niceToHave: ['x'],
-      perks: ['y'],
-    },
+    responsibilities: ['a', 'A', 'b'],
+    requirements: Array.from({ length: 10 }, (_, i) => `req${i}`),
+    niceToHave: ['x'],
+    perks: ['y'],
   };
   const out = normalizeJobInsights(raw);
   assert.equal(out.summary.length, 400);
@@ -46,6 +44,17 @@ test('normalizeJobInsights clamps lists and defaults bad experienceLevel', () =>
   assert.equal(out.highlights.requirements.length, LIST_LIMITS.REQUIREMENTS);
   assert.deepEqual(normalizeJobInsights(null).highlights.perks, []);
   assert.equal(normalizeJobInsights({ summary: 5 }).summary, '');
+
+  const flat = normalizeJobInsights({
+    summary: 'S',
+    experienceLevel: 'MID',
+    responsibilities: ['Build APIs'],
+    requirements: ['Node.js'],
+    niceToHave: ['Docker'],
+    perks: ['Health'],
+  });
+  assert.equal(flat.highlights.experienceLevel, 'MID');
+  assert.deepEqual(flat.highlights.responsibilities, ['Build APIs']);
 });
 
 test('normalizeSearchQuery falls back to original query when semanticQuery empty', () => {

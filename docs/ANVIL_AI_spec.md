@@ -620,7 +620,7 @@ const ResumeTipsSchema = z.object({
 
 `normalize.js` (pure, unit-tested) — each takes the raw LLM object and returns the cleaned DTO:
 - `normalizeList(arr, { max, maxLen = 160 })`: strings only, trimmed, empty removed, case-insensitive dedupe, each cut to `maxLen`, first `max` kept.
-- `normalizeJobInsights(raw)` → `{ summary (≤ 400 chars), highlights: { experienceLevel, responsibilities, requirements, niceToHave, perks } }` using `LIST_LIMITS`.
+- `normalizeJobInsights(raw)` → `{ summary (≤ 400 chars), highlights: { experienceLevel, responsibilities, requirements, niceToHave, perks } }` using `LIST_LIMITS`. `raw` is the flat `JobInsightsSchema` output; move the highlight fields under `highlights`.
 - `normalizeSearchQuery(raw, originalQuery)` → `{ semanticQuery, filters: { locationType, jobType, location, salaryMin, salaryMax } }`: `semanticQuery` trimmed/≤ 200 chars and **falls back to `originalQuery`** when empty; `location` trimmed/≤ 80 chars and `null` if it equals `remote` (case-insensitive); salaries rounded to integers, non-positive or non-finite ⇒ `null`; if `salaryMin > salaryMax` both are swapped.
 - `normalizeResumeProfile(raw)` → same shape as the schema with all lists clamped (`LIST_LIMITS`), `totalYearsExperience` clamped to `0–60` or `null`, `years` clamped `0–60` or `null`.
 - `normalizeFitAnalysis(raw)` → `score` = `Math.round`, clamped `0–100` (non-finite ⇒ 0), lists clamped, plus `verdict = scoreToVerdict(score)`.

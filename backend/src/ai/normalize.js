@@ -29,15 +29,14 @@ function asString(value) {
 
 function normalizeJobInsights(raw) {
   const r = raw && typeof raw === 'object' ? raw : {};
-  const h = r.highlights && typeof r.highlights === 'object' ? r.highlights : {};
   return {
     summary: asString(r.summary).slice(0, 400),
     highlights: {
-      experienceLevel: EXPERIENCE_LEVELS.includes(h.experienceLevel) ? h.experienceLevel : 'UNSPECIFIED',
-      responsibilities: normalizeList(h.responsibilities, { max: LIST_LIMITS.RESPONSIBILITIES }),
-      requirements: normalizeList(h.requirements, { max: LIST_LIMITS.REQUIREMENTS }),
-      niceToHave: normalizeList(h.niceToHave, { max: LIST_LIMITS.NICE_TO_HAVE }),
-      perks: normalizeList(h.perks, { max: LIST_LIMITS.PERKS }),
+      experienceLevel: EXPERIENCE_LEVELS.includes(r.experienceLevel) ? r.experienceLevel : 'UNSPECIFIED',
+      responsibilities: normalizeList(r.responsibilities, { max: LIST_LIMITS.RESPONSIBILITIES }),
+      requirements: normalizeList(r.requirements, { max: LIST_LIMITS.REQUIREMENTS }),
+      niceToHave: normalizeList(r.niceToHave, { max: LIST_LIMITS.NICE_TO_HAVE }),
+      perks: normalizeList(r.perks, { max: LIST_LIMITS.PERKS }),
     },
   };
 }
