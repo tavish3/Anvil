@@ -1,6 +1,6 @@
 const ApiResponse = require('../../utils/ApiResponse');
 const asyncHandler = require('../../utils/asyncHandler');
-const { getAiStatus, getJobInsights, regenerateJobInsights, getSimilarJobs, searchJobs, getRecommendations, analyzeFitForUser } = require('./ai.service');
+const { getAiStatus, getJobInsights, regenerateJobInsights, getSimilarJobs, searchJobs, getRecommendations, analyzeFitForUser, generateCoverLetterForUser, generateResumeTipsForUser } = require('./ai.service');
 
 const handleGetStatus = asyncHandler(async (req, res) => {
   const status = await getAiStatus();
@@ -58,6 +58,22 @@ const handleAnalyzeFit = asyncHandler(async (req, res) => {
   );
 });
 
+const handleGenerateCoverLetter = asyncHandler(async (req, res) => {
+  const result = await generateCoverLetterForUser(req.user.userId, req.params.id, req.validated.body);
+
+  res.status(200).json(
+    new ApiResponse(200, result, 'Cover letter generated')
+  );
+});
+
+const handleGenerateResumeTips = asyncHandler(async (req, res) => {
+  const result = await generateResumeTipsForUser(req.user.userId, req.params.id);
+
+  res.status(200).json(
+    new ApiResponse(200, result, 'Resume tips generated')
+  );
+});
+
 module.exports = {
   getStatus: handleGetStatus,
   getJobInsights: handleGetJobInsights,
@@ -65,5 +81,7 @@ module.exports = {
   getSimilarJobs: handleGetSimilarJobs,
   searchJobs: handleSearchJobs,
   getRecommendations: handleGetRecommendations,
-  analyzeFit: handleAnalyzeFit
+  analyzeFit: handleAnalyzeFit,
+  generateCoverLetter: handleGenerateCoverLetter,
+  generateResumeTips: handleGenerateResumeTips
 };

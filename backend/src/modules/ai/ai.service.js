@@ -5,6 +5,7 @@ const { SYNC_REQUEST_TIMEOUT_MS } = require('../../ai/constants');
 const { runAi } = require('../../ai/errors');
 const { parseSearchQuery } = require('../../ai/chains/searchParser.chain');
 const { getFitAnalysis } = require('../../ai/chains/fitAnalysis.chain');
+const { runApplicationAssistant } = require('../../ai/graphs/applicationAssistant.graph');
 const { embedQuery } = require('../../ai/embeddings');
 const { enqueueJobProcessing } = require('../../queues/ai.queue');
 const {
@@ -172,6 +173,61 @@ const analyzeFitForUser = async (userId, jobId) => {
   }));
 };
 
+// Shared loader for endpoints #8/#9 (§12.5): job + employer name (404), then the
+// applicant's resume incl. the user's name (409 RESUME_REQUIRED). Works as soon as
+// the resume text is stored — it does not wait for READY.
+const loadJobAndResume = async (userId, jobId) => {
+  const job = await prisma.job.findFirst({
+    where: { id: jobId, isDeleted: false },
+    include: { employer: { select: { name: true } } }
+  });
+  if (!job) {
+    throw new ApiError(404, 'Job not found');
+  }
+
+  const resume = await prisma.resume.findUnique({
+    where: { userId },
+    include: { user: { select: { name: true } } }
+  });
+  if (!resume) {
+    throw new ApiError(409, 'Upload your resume to use this feature', [{ code: 'RESUME_REQUIRED' }]);
+  }
+
+  return { job, employerName: job.employer.name, resume, candidateName: resume.user.name };
+};
+
+// Endpoint #8 (§11.3 / §12.5): LangGraph cover-letter mode. The letter is never saved.
+const generateCoverLetterForUser = async (userId, jobId, { tone, notes } = {}) => {
+  const { job, employerName, resume, candidateName } = await loadJobAndResume(userId, jobId);
+
+  const result = await runAi(() => runApplicationAssistant({
+    mode: 'COVER_LETTER',
+    job,
+    employerName,
+    resumeText: resume.text,
+    resumeHash: resume.textHash,
+    candidateName,
+    tone,
+    notes
+  }));
+
+  return { ...result, tone };
+};
+
+// Endpoint #9 (§11.3 / §12.5): LangGraph resume-tips mode (cached per resume+job).
+const generateResumeTipsForUser = async (userId, jobId) => {
+  const { job, employerName, resume, candidateName } = await loadJobAndResume(userId, jobId);
+
+  return runAi(() => runApplicationAssistant({
+    mode: 'RESUME_TIPS',
+    job,
+    employerName,
+    resumeText: resume.text,
+    resumeHash: resume.textHash,
+    candidateName
+  }));
+};
+
 module.exports = {
   getAiStatus,
   getJobInsights,
@@ -179,5 +235,7 @@ module.exports = {
   getSimilarJobs,
   searchJobs,
   getRecommendations,
-  analyzeFitForUser
+  analyzeFitForUser,
+  generateCoverLetterForUser,
+  generateResumeTipsForUser
 };

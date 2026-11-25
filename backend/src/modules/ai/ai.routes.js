@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
-const { getStatus, getJobInsights, regenerateJobInsights, getSimilarJobs, searchJobs, getRecommendations, analyzeFit } = require('./ai.controller');
-const { similarQuerySchema, searchQuerySchema, recommendationsQuerySchema } = require('./ai.schema');
+const { getStatus, getJobInsights, regenerateJobInsights, getSimilarJobs, searchJobs, getRecommendations, analyzeFit, generateCoverLetter, generateResumeTips } = require('./ai.controller');
+const { similarQuerySchema, searchQuerySchema, recommendationsQuerySchema, coverLetterBodySchema } = require('./ai.schema');
 const validateRequest = require('../../middlewares/validateRequest');
 const verifyAccessToken = require('../../middlewares/auth');
 const requireRole = require('../../middlewares/requireRole');
@@ -15,5 +15,7 @@ router.get('/jobs/:id/similar', requireAiEnabled, aiRateLimit({ name: 'similar',
 router.get('/search', requireAiEnabled, aiRateLimit({ name: 'search', limit: 20 }), aiDailyBudget, validateRequest(searchQuerySchema, 'query'), searchJobs);
 router.get('/recommendations', requireAiEnabled, verifyAccessToken, requireRole('APPLICANT'), aiRateLimit({ name: 'recommendations', limit: 30 }), validateRequest(recommendationsQuerySchema, 'query'), getRecommendations);
 router.post('/jobs/:id/fit', requireAiEnabled, verifyAccessToken, requireRole('APPLICANT'), aiRateLimit({ name: 'fit', limit: 10 }), aiDailyBudget, analyzeFit);
+router.post('/jobs/:id/cover-letter', requireAiEnabled, verifyAccessToken, requireRole('APPLICANT'), aiRateLimit({ name: 'cover-letter', limit: 5 }), aiDailyBudget, validateRequest(coverLetterBodySchema, 'body'), generateCoverLetter);
+router.post('/jobs/:id/resume-tips', requireAiEnabled, verifyAccessToken, requireRole('APPLICANT'), aiRateLimit({ name: 'resume-tips', limit: 5 }), aiDailyBudget, generateResumeTips);
 
 module.exports = router;

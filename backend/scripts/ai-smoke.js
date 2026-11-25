@@ -6,12 +6,13 @@ const assert = require('node:assert/strict');
 const { aiConfig } = require('../src/ai/config');
 const { embedQuery, embedDocument } = require('../src/ai/embeddings');
 const { getChatModel, getText, callOptions } = require('../src/ai/llm');
-const { buildJobDocument } = require('../src/ai/text');
+const { buildJobDocument, sha256 } = require('../src/ai/text');
 const { EMBEDDING_DIMENSIONS } = require('../src/ai/constants');
 const { parseSearchQuery } = require('../src/ai/chains/searchParser.chain');
 const { generateJobInsights } = require('../src/ai/chains/jobInsights.chain');
 const { extractResumeProfile } = require('../src/ai/chains/resumeProfile.chain');
 const { analyzeFit } = require('../src/ai/chains/fitAnalysis.chain');
+const { runApplicationAssistant } = require('../src/ai/graphs/applicationAssistant.graph');
 const redis = require('../src/config/redis');
 const prisma = require('../src/config/db');
 
@@ -102,6 +103,40 @@ const checks = [
       assert.ok(VERDICTS.includes(analysis.verdict));
     },
   },
+  // §18.1 item 6 — only with --full (the cover-letter graph makes up to 5 LLM calls).
+  {
+    name: 'cover letter (graph)',
+    fullOnly: true,
+    run: async () => {
+      const result = await runApplicationAssistant({
+        mode: 'COVER_LETTER',
+        job: SAMPLE_JOB,
+        employerName: EMPLOYER_NAME,
+        resumeText: SAMPLE_RESUME,
+        resumeHash: sha256(SAMPLE_RESUME),
+        candidateName: 'Priya Sharma',
+        tone: 'PROFESSIONAL',
+        notes: '',
+      });
+      assert.ok(typeof result.coverLetter === 'string' && result.coverLetter.length > 0);
+      assert.ok(!/\[[^\]\n]{1,60}\]/.test(result.coverLetter), 'cover letter contains a placeholder');
+    },
+  },
+  {
+    name: 'resume tips (graph)',
+    fullOnly: true,
+    run: async () => {
+      const result = await runApplicationAssistant({
+        mode: 'RESUME_TIPS',
+        job: SAMPLE_JOB,
+        employerName: EMPLOYER_NAME,
+        resumeText: SAMPLE_RESUME,
+        resumeHash: sha256(SAMPLE_RESUME),
+        candidateName: 'Priya Sharma',
+      });
+      assert.ok(Array.isArray(result.tips) && result.tips.length >= 1);
+    },
+  },
   {
     name: 'plain text',
     run: async () => {
@@ -119,9 +154,6 @@ async function cleanup() {
 
 async function main() {
   const full = process.argv.includes('--full');
-  if (full) {
-    console.log('graph checks are added in phase AI-9');
-  }
 
   if (!aiConfig.active) {
     console.error('AI is not active. Set AI_ENABLED=true and a valid GEMINI_API_KEY in backend/.env.');
@@ -134,6 +166,7 @@ async function main() {
 
   let failed = 0;
   for (const check of checks) {
+    if (check.fullOnly && !full) continue;
     const start = Date.now();
     try {
       await check.run();
