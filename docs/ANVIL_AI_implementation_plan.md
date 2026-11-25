@@ -1,5 +1,7 @@
 # Anvil — AI Features Implementation Plan
 
+> **Provider: Google Gemini (free tier)** — revision of 2026-11-24 (originally OpenAI). **Phases AI-0 to AI-3 were first implemented with OpenAI; convert that existing code with `ANVIL_AI_gemini_migration.md` BEFORE starting Phase AI-4. Do not re-run AI-0…AI-3 from scratch.** The AI-0…AI-3 prompts below describe the final Gemini state (they remain useful as a reference and for new setups). Phases AI-4 onward assume the Gemini state.
+>
 > Companion to `ANVIL_AI_spec.md` (the **AI spec**) and the finished `ANVIL_spec.md` / `ANVIL_implementation_plan.md` (the **base spec/plan**, Phases 0–17, all complete).
 >
 > Each phase is self-contained and agent-executable. At the start of every session give the agent: **`ANVIL_spec.md` + `ANVIL_AI_spec.md` + this file**, tell it which phase to implement, and do not skip or reorder phases. Section references (§) point into `ANVIL_AI_spec.md`. Phases are named `AI-0 … AI-15` so they never collide with the base plan's Phase 0–17.
@@ -11,11 +13,11 @@
 1. **Implement only the phase you were given.** Phases build on each other; assume earlier ones are done and working.
 2. **Additive only.** Do not modify any existing file except where §16 of the AI spec explicitly lists it (and only the listed change). Do **not** fix the pre-existing issues listed in §20 — mention them in the report instead.
 3. **Conventions:** backend = CommonJS (`require`/`module.exports`), plain JS, 2 spaces, single quotes, semicolons, `asyncHandler`, `ApiResponse`, `ApiError`, module layout `<name>.routes/controller/service/schema.js`. Frontend = ESM React 19, Tailwind 3, TanStack Query v5, `react-router-dom`, `react-hot-toast`, axios instance from `src/api/axios.js`. Match the surrounding code style.
-4. **Dependencies:** install only what §4.1 lists. Do **not** install `langchain`, `@langchain/community`, `openai`, `pg`, `pgvector`, `pdfjs-dist`.
-5. **AI-inactive safety:** the backend must still boot and every existing feature must still work with no `OPENAI_API_KEY` (§6). Never construct `ChatOpenAI`/`OpenAIEmbeddings` at module load; create them lazily.
-6. **Secrets:** never write the OpenAI key into any tracked file or log. It lives only in `backend/.env` (already git-ignored).
+4. **Dependencies:** install only what §4.1 lists. Do **not** install `@langchain/openai`, `openai`, `@langchain/google-genai`, `@langchain/google-vertexai`, `langchain`, `@langchain/community`, `pg`, `pgvector`, `pdfjs-dist`.
+5. **AI-inactive safety:** the backend must still boot and every existing feature must still work with no `GEMINI_API_KEY` (§6). Never construct `ChatGoogle` or `GoogleGenAI` at module load; create them lazily.
+6. **Secrets:** never write the Gemini API key into any tracked file or log. It lives only in `backend/.env` (already git-ignored).
 7. **Never use `req.query =` or the old `validate` middleware for new AI routes** — use `validateRequest` and `req.validated.*` (§10.3).
-8. **Verification before reporting done:** run the phase's "Done when" checks. From phase AI-2 onward also run `npm test` in `backend/`; from AI-5 onward start the server (`npm run dev`) and exercise the endpoints with `curl`. If a check needs an `OPENAI_API_KEY` that is not available in your environment, **say so explicitly** and list it under "Manual checks for the developer" instead of claiming it passed.
+8. **Verification before reporting done:** run the phase's "Done when" checks. From phase AI-2 onward also run `npm test` in `backend/`; from AI-5 onward start the server (`npm run dev`) and exercise the endpoints with `curl`. If a check needs a `GEMINI_API_KEY` that is not available in your environment, **say so explicitly** and list it under "Manual checks for the developer" instead of claiming it passed.
 9. **Final report format:** (a) files created, (b) files modified (with a one-line description each), (c) commands run and their results, (d) manual checks for the developer, (e) any deviation from the spec and why.
 
 ---
@@ -29,14 +31,14 @@
 You are implementing Phase AI-0 of the Anvil AI features. Specs: ANVIL_spec.md (base) and ANVIL_AI_spec.md (addendum). Base phases 0-17 are complete.
 
 Do the following (see AI spec §4, §6, §16, §19):
-1. Check `node -v` is >= 22.3 (required by @langchain/openai and pdf-parse). If it is lower, STOP and report - the developer must upgrade Node (and the Docker/VPS base image) first. Add `"engines": { "node": ">=22.3.0" }` to backend/package.json.
+1. Check `node -v` is >= 22.3 (required by @google/genai and pdf-parse). If it is lower, STOP and report - the developer must upgrade Node (and the Docker/VPS base image) first. Add `"engines": { "node": ">=22.3.0" }` to backend/package.json.
 2. In docker-compose.yml change ONLY the postgres image from `postgres:15` to `pgvector/pgvector:pg15` (keep container name, env, ports, volume, healthcheck). Run `docker compose pull postgres && docker compose up -d postgres redis`.
 3. Verify the extension is available:
    docker exec job-board-postgres psql -U jobboard -d jobboard -c "SELECT name, default_version FROM pg_available_extensions WHERE name = 'vector';"
    It must return one row. Also confirm the existing data is still there (e.g. `SELECT count(*) FROM "Job";` works).
-4. In backend/: `npm install @langchain/core @langchain/openai @langchain/langgraph pdf-parse`. Keep the resolved caret ranges. pdf-parse must be the v2 API (2.x): `const { PDFParse } = require('pdf-parse')`.
+4. In backend/: `npm install @langchain/core @langchain/google @google/genai @langchain/langgraph pdf-parse`. Keep the resolved caret ranges. pdf-parse must be the v2 API (2.x): `const { PDFParse } = require('pdf-parse')`.
 5. Verify all packages load in CommonJS (no ESM errors):
-   node -e "require('@langchain/core/prompts'); require('@langchain/core/output_parsers'); require('@langchain/openai'); require('@langchain/langgraph'); const { PDFParse } = require('pdf-parse'); console.log('CJS imports OK', typeof PDFParse)"
+   node -e "require('@langchain/core/prompts'); require('@langchain/core/output_parsers'); require('@langchain/google/node'); require('@google/genai'); require('@langchain/langgraph'); const { PDFParse } = require('pdf-parse'); console.log('CJS imports OK', typeof PDFParse)"
 6. Edit backend/package.json scripts: set "test" to `node --test` (no path argument: `node --test test/` FAILS on Node 22; the bare form auto-discovers `*.test.js` files) and add "ai:smoke": "node scripts/ai-smoke.js" and "ai:backfill": "node scripts/ai-backfill.js" (the scripts/test folders are created in later phases; create an empty backend/test/ai/.gitkeep and backend/scripts/.gitkeep so the paths exist).
 7. Append the AI block from AI spec §6 verbatim to backend/.env.example (all values empty/default as shown, with the comments).
 8. In backend/src/app.js, directly after `const app = express();` add:
@@ -50,7 +52,7 @@ Do not create any AI feature code in this phase.
 **Done when:**
 - `pg_available_extensions` returns the `vector` row; existing tables/data intact.
 - The CJS import one-liner prints `CJS imports OK function`.
-- `npm run dev` boots with no OpenAI key and `curl localhost:5000/health` and `curl localhost:5000/api/jobs` still work.
+- `npm run dev` boots with no Gemini key and `curl localhost:5000/health` and `curl localhost:5000/api/jobs` still work.
 
 ---
 
@@ -96,19 +98,19 @@ You are implementing Phase AI-2 of the Anvil AI features. Specs: ANVIL_spec.md a
 
 Create these files in backend/src/ai/ exactly as specified in AI spec §8 (read §8.2-§8.9 fully; they are authoritative):
 1. constants.js  (§8.2, copy the object verbatim)
-2. config.js     (§8.3, §6) - loads dotenv, Zod-validates env, exports BOTH `aiConfig` (frozen) and a pure `buildConfig(env)`; `active = enabled && apiKey non-empty`; OPENAI_REASONING_EFFORT: variable absent => 'low', present-but-empty => `reasoningEffort: undefined`, otherwise one of none|low|medium|high; OPENAI_WRITING_MODEL empty => chat model.
-3. errors.js     (§8.4) - toApiError + runAi. Use the existing utils/ApiError.
+2. config.js     (§8.3, §6) - loads dotenv, Zod-validates env, exports BOTH `aiConfig` (frozen) and a pure `buildConfig(env)`; `active = enabled && apiKey non-empty`; GEMINI_API_KEY (fallback GOOGLE_API_KEY); GEMINI_THINKING_LEVEL: variable absent => 'low', present-but-empty => `thinkingLevel: undefined`, otherwise one of minimal|low|medium|high; GEMINI_WRITING_MODEL empty => chat model; GEMINI_EMBEDDING_MODEL must be gemini-embedding-2 or gemini-embedding-001; also AI_WORKER_RATE_PER_MINUTE (default 6) and the other variables of §6.
+3. errors.js     (§8.4) - toApiError (reads `err.statusCode ?? err.status`: ChatGoogle throws RequestError with statusCode, @google/genai throws ApiError with status; 429 => 503, PromptBlockedError => 422, timeouts/aborts => 504, everything else => 502), runAi, isRateLimitError, getRetryDelayMs, EmptyModelOutputError. Use the existing utils/ApiError.
 4. cache.js      (§8.5) - getJson/setJson using config/redis.js; never throw.
-5. llm.js        (§8.6) - lazy singletons getChatModel / getWritingModel / getEmbeddings and `structured(model, schema, name)`. ChatOpenAI options: { model, apiKey, maxRetries: 2, timeout } plus `reasoning: { effort }` ONLY when aiConfig.reasoningEffort is set. NEVER pass `temperature`. Use `withStructuredOutput(schema, { method: 'jsonSchema', strict: true, name })`. OpenAIEmbeddings: { model, apiKey, dimensions: 1536, batchSize: 64, maxRetries: 2, timeout }. Nothing may be constructed at require-time.
-6. text.js       (§8.7) - sha256, cleanText, stripPdfPageMarkers, truncate, wordCount, escapeLike, buildJobDocument, buildResumeEmbeddingText.
-7. vector.js     (§8.7) - toVectorLiteral (validate length 1536 and finite numbers).
-8. embeddings.js (§8.7) - embedDocument (no cache) and embedQuery (Redis cache `ai:emb:<model>:<sha256>`, TTL from constants); truncate input to EMBEDDING_INPUT_MAX_CHARS; reject empty input; validate returned length.
+5. llm.js        (§8.6) - lazy singletons getChatModel / getWritingModel built with `const { ChatGoogle } = require('@langchain/google/node')`, plus `structured(model, schema, name)` = `model.withStructuredOutput(schema, { method: 'jsonSchema', name })`, `callOptions(signal)` (combines the caller's signal with AbortSignal.timeout(requestTimeoutMs)) and `getText(message)` (message.text trimmed; throws EmptyModelOutputError when empty). ChatGoogle options: { model, apiKey, platformType: 'gai', maxRetries: 2 } plus `thinkingLevel` ONLY when aiConfig.thinkingLevel is set. NEVER pass `temperature`, `timeout` (it is ignored by ChatGoogle), `endpoint`, `reasoningEffort` or `thinkingBudget`. NEVER use StringOutputParser (it leaks thought summaries into the text). Nothing may be constructed at require-time.
+6. text.js       (§8.7) - sha256, cleanText, stripPdfPageMarkers, truncate, wordCount, escapeLike, buildJobDocument, buildResumeEmbeddingText, formatEmbeddingInput (pure; role/prefix rules for the embedding models).
+7. vector.js     (§8.7) - toVectorLiteral (validate length 1536 and finite numbers) and l2Normalize.
+8. embeddings.js (§8.7) - uses the official SDK: lazy `new GoogleGenAI({ apiKey })` from '@google/genai' (NOT a LangChain embeddings class). embedDocument(text, { title, signal }) and embedQuery(text, { cache = true, signal }) (Redis cache `ai:emb:<model>:q:<sha256>`, TTL from constants). Truncate input to EMBEDDING_INPUT_MAX_CHARS (6000); reject empty input; format with the pure helper `formatEmbeddingInput` from text.js (gemini-embedding-2 => text prefixes and NO taskType; gemini-embedding-001 => taskType RETRIEVAL_DOCUMENT/RETRIEVAL_QUERY); call `ai.models.embedContent({ model, contents: <ONE string>, config: { outputDimensionality: 1536, abortSignal, taskType? } })`; read `res.embeddings[0].values`; up to 2 retries on 500/503/504/network errors, NO retry on 429; validate length 1536; l2Normalize (vector.js) before returning.
 9. pdf.js        (§8.7) - extractPdfText(buffer) using `const { PDFParse } = require('pdf-parse')`: `new PDFParse({ data: buffer })`, `getText({ first: RESUME_MAX_PDF_PAGES })` raced against PDF_PARSE_TIMEOUT_MS, always `await parser.destroy()` in finally, strip page markers BEFORE measuring length, throw the two ApiError(422) messages from §8.7.
 10. schemas.js   (§8.9) - the Zod schemas exactly as written (all fields required, `.nullable()` instead of optional, no .int()/.min()/.max()/.default()).
 11. normalize.js (§8.9) - normalizeList, normalizeJobInsights, normalizeSearchQuery, normalizeResumeProfile, normalizeFitAnalysis, scoreToVerdict, normalizeTips with the exact clamping rules in §8.9 and LIST_LIMITS from constants.
 
 Then write unit tests in backend/test/ai/ using `node:test` and `node:assert/strict` (no network, no DB, no Redis connection required - do not require modules that open a Redis connection at load time in tests; if a module under test requires config/redis.js, structure the code so the pure functions live in files that do not, or lazy-require redis inside the functions):
-- text.test.js, vector.test.js, normalize.test.js, config.test.js, errors.test.js as listed in AI spec §18.3 (include the boundaries 34/35/54/55/74/75 for scoreToVerdict; the real pdf-parse page marker format "\n\n-- 1 of 3 --\n\n"; salary swap/rounding; `remote` location => null; empty semanticQuery falls back to the original query).
+- text.test.js (including formatEmbeddingInput), vector.test.js (including l2Normalize), normalize.test.js, config.test.js, errors.test.js (including statusCode-vs-status, PromptBlockedError, isRateLimitError, getRetryDelayMs) as listed in AI spec §18.3 (include the boundaries 34/35/54/55/74/75 for scoreToVerdict; the real pdf-parse page marker format "\n\n-- 1 of 3 --\n\n"; salary swap/rounding; `remote` location => null; empty semanticQuery falls back to the original query).
 PDF extraction is NOT unit-tested here (it needs real PDF files); it is verified manually in AI-7.
 
 Run `npm test` in backend/ and make it pass. Do not create queues, routes, chains or prompts yet.
@@ -116,30 +118,30 @@ Run `npm test` in backend/ and make it pass. Do not create queues, routes, chain
 
 **Done when:**
 - `npm test` passes (all unit tests green).
-- `node -e "require('./src/ai/config')"` works with and without `OPENAI_API_KEY` set, and `aiConfig.active` is `false` without a key.
+- `node -e "require('./src/ai/config')"` works with and without `GEMINI_API_KEY` set, and `aiConfig.active` is `false` without a key.
 - Requiring `src/ai/llm.js` with no key does **not** throw (only calling the getters does).
 
 ---
 
 ## Phase AI-3 — Prompts, chains and the live smoke script
 
-**Goal:** all prompts plus the four single-call chains (job insights, search parsing, resume profile, fit analysis), and a script that proves them against the real OpenAI API.
+**Goal:** all prompts plus the four single-call chains (job insights, search parsing, resume profile, fit analysis), and a script that proves them against the real Gemini API.
 
 **Prompt:**
 ````
 You are implementing Phase AI-3 of the Anvil AI features. Specs: ANVIL_spec.md and ANVIL_AI_spec.md. Phases AI-0..AI-2 are complete.
 
 1. Create backend/src/ai/prompts.js containing ALL prompts from AI spec §14 (14.1-14.8) as exported `ChatPromptTemplate` objects (or builder functions where numbers/tone must be interpolated): system text verbatim from the spec, human templates verbatim. In template text literal braces must be doubled (`{{ }}`); interpolate FIT_BANDS numbers into the fit prompt string BEFORE creating the template. Export the tone map (PROFESSIONAL / ENTHUSIASTIC / CONCISE => tone_instruction, length_instruction, minWords, maxWords: 220/320, 220/320, 150/200).
-2. Create the chains (AI spec §12, §8.6), each building its runnable lazily on first call and caching it in a module variable, each accepting `{ signal }` and passing it to `.invoke(input, { signal })`:
+2. Create the chains (AI spec §12, §8.6), each building its runnable lazily on first call and caching it in a module variable, each accepting `{ signal }` and calling `.invoke(input, callOptions(signal))` (callOptions is in src/ai/llm.js):
    - chains/jobInsights.chain.js     => generateJobInsights(document, { signal })  -> normalizeJobInsights(raw)
-   - chains/searchParser.chain.js    => parseSearchQuery(query, { signal }) -> { semanticQuery, filters }; Redis cache `ai:parse:<PROMPT_VERSION>:<sha256(lowercased trimmed query)>` (TTL QUERY_PARSE); uses normalizeSearchQuery(raw, originalQuery)
+   - chains/searchParser.chain.js    => parseSearchQuery(query, { signal }) -> { semanticQuery, filters }; Redis cache `ai:parse:<PROMPT_VERSION>:<chatModel>:<sha256(lowercased trimmed query)>` (TTL QUERY_PARSE); uses normalizeSearchQuery(raw, originalQuery)
    - chains/resumeProfile.chain.js   => extractResumeProfile(resumeText, { signal }) -> normalizeResumeProfile; input truncated to RESUME_PROMPT_MAX_CHARS
-   - chains/fitAnalysis.chain.js     => analyzeFit({ document, resumeText, signal }) -> normalizeFitAnalysis (includes verdict); and getFitAnalysis({ job, employerName, resume /* { text, textHash } */, signal }) -> { analysis, cached } with cache key `ai:fit:<PROMPT_VERSION>:<resume.textHash>:<sha256(buildJobDocument(job, employerName))>` (TTL FIT)
-   Chain pattern: `prompt.pipe(structured(getChatModel(), Schema, 'name'))`.
+   - chains/fitAnalysis.chain.js     => analyzeFit({ document, resumeText, signal }) -> normalizeFitAnalysis (includes verdict); and getFitAnalysis({ job, employerName, resume /* { text, textHash } */, signal }) -> { analysis, cached } with cache key `ai:fit:<PROMPT_VERSION>:<chatModel>:<resume.textHash>:<sha256(buildJobDocument(job, employerName))>` (TTL FIT)
+   Chain pattern: `prompt.pipe(structured(getChatModel(), Schema, 'name'))` (structured = withStructuredOutput with method 'jsonSchema').
 3. Create backend/scripts/ai-smoke.js per AI spec §18.1 (checks 1-5; add the `--full` flag handling as a stub that prints "graph checks are added in phase AI-9" for now). Inline fictional sample job + resume data. The script must exit non-zero if any check fails and print PASS/FAIL with durations. It must close Redis (and anything else holding the event loop open) so the process exits.
 4. Add unit tests for any new pure helpers you introduce (e.g. the tone map). Keep `npm test` green.
 
-Redis must be running (docker compose up -d redis) because the chains use the Redis cache. If OPENAI_API_KEY is available, run `npm run ai:smoke` and fix any failure (typical causes: a schema keyword rejected by strict mode, a model parameter rejected - see AI spec §4.2). If the key is NOT available, say so and list `npm run ai:smoke` under "Manual checks for the developer".
+Redis must be running (docker compose up -d redis) because the chains use the Redis cache. If GEMINI_API_KEY is available, run `npm run ai:smoke` and fix any failure (typical causes: a JSON-schema keyword rejected by Gemini's responseJsonSchema, a model that is not available on your free tier, a changed embedContent response shape - see AI spec §4.2). Remember: every chain call is `chain.invoke(input, callOptions(signal))` (ChatGoogle ignores its `timeout` option) and plain-text results use getText(), never StringOutputParser. If the key is NOT available, say so and list `npm run ai:smoke` under "Manual checks for the developer".
 ````
 
 **Done when:**
@@ -161,17 +163,18 @@ You are implementing Phase AI-4 of the Anvil AI features. Specs: ANVIL_spec.md a
    hasJobEmbedding(jobId), setJobEmbedding(db, jobId, vec), setResumeEmbedding(db, userId, textHash, vec) (returns affected rows), clearResumeEmbedding(db, userId).
    (`db` is the prisma client or a transaction client.)
 2. Create backend/src/queues/ai.queue.js (AI spec §9.1): aiQueue created only when aiConfig.active; defaultJobOptions { attempts: 3, backoff: { type: 'exponential', delay: 5000 }, removeOnComplete: true, removeOnFail: { count: 200 } } on the QUEUE; export enqueueJobProcessing(jobId, { force }) and enqueueResumeProcessing(userId); both are no-ops returning false when inactive and NEVER throw.
-3. Create backend/src/queues/ai.worker.js (AI spec §9.2): Worker 'ai' with concurrency aiConfig.workerConcurrency and limiter { max: 30, duration: 60000 }; implement `process-job` and `process-resume` exactly as specified (content hash = sha256(doc + '|' + PROMPT_VERSION); skip rules; Promise.all of insights + embedding; Prisma transaction with upsert + raw embedding update; stale-resume guard using textHash; final-failure handler setting status FAILED with a truncated error; SIGTERM/SIGINT like the email worker). Export `null` when AI is inactive. Log lines prefixed `[AI Worker]`; never log prompts/resume text.
-4. Wire it: in backend/server.js require './src/queues/ai.worker' after the email worker and log `AI worker started` or `AI features disabled (no OPENAI_API_KEY)`.
+3. Create backend/src/queues/ai.worker.js (AI spec §9.2): `const worker = new Worker('ai', processor, ...)` with concurrency aiConfig.workerConcurrency and limiter { max: aiConfig.workerRatePerMinute, duration: 60000 }; QUOTA HANDLING (AI spec §9.2): wrap the processor body in try/catch and on `isRateLimitError(err)` do `await worker.rateLimit(Math.max(getRetryDelayMs(err) ?? 0, WORKER_RATE_LIMIT_PAUSE_MS)); throw Worker.RateLimitError();` (this pauses the queue and does NOT consume an attempt);  implement `process-job` and `process-resume` exactly as specified (content hash = sha256([doc, PROMPT_VERSION, aiConfig.chatModel, aiConfig.embeddingModel].join('|')); skip rules; Promise.all of generateJobInsights(doc) + embedDocument(doc, { title: job.title }); the resume vector uses embedQuery(buildResumeEmbeddingText(...), { cache: false }) i.e. the QUERY role; Prisma transaction with upsert + raw embedding update; stale-resume guard using textHash; final-failure handler setting status FAILED with a truncated error; SIGTERM/SIGINT like the email worker). Export `null` when AI is inactive. Log lines prefixed `[AI Worker]`; never log prompts/resume text.
+4. Wire it: in backend/server.js require './src/queues/ai.worker' after the email worker and log `AI worker started` or `AI features disabled (no GEMINI_API_KEY)`.
 5. Hook job writes (AI spec §16): in backend/src/modules/jobs/job.service.js import { enqueueJobProcessing } from '../../queues/ai.queue' and call `await enqueueJobProcessing(job.id)` at the end of createJob (before returning) and updateJob (after the update, before returning). No other change in that file.
 6. Create backend/scripts/ai-backfill.js per AI spec §18.2 (--force, --limit N; only active jobs; also resumes not READY; prints counts; closes queue, Redis and Prisma; exits cleanly; prints a message and exits 0 when AI is inactive).
 7. Add unit tests only for pure logic you add (e.g. a helper that decides "skip or process" if you extract one). Keep `npm test` green.
 
-Verify (needs OPENAI_API_KEY; otherwise list as manual checks):
+Verify (needs GEMINI_API_KEY; otherwise list as manual checks):
 - Start the server (`npm run dev`). Log in as demo employer (employer1@demo.com / Password123!) and `POST /api/jobs` a new job. Within ~15 s: `SELECT status, summary IS NOT NULL, embedding IS NOT NULL FROM "JobInsight" WHERE "jobId" = '<id>';` shows READY / true / true.
 - `PATCH` the same job with a changed description: the row's contentHash changes and the summary is regenerated; `PATCH` with identical content causes NO LLM call (worker log says skipped).
 - Soft-delete a job; confirm nothing crashes.
-- Run `npm run ai:backfill` and watch the queue drain; run it again and confirm it enqueues ~0 jobs.
+- Run `npm run ai:backfill` and watch the queue drain (at the default 6 jobs/minute ~170 jobs take about 30 minutes; for a quick test use `-- --limit 10`); run it again and confirm it enqueues ~0 jobs.
+- Quota check: temporarily set `AI_WORKER_RATE_PER_MINUTE=60`, enqueue many jobs, and if Gemini returns 429 confirm the log shows the queue pausing, no job turns FAILED, and processing continues after the pause (restore the setting afterwards).
 - With the key removed from .env: server boots, POST /api/jobs still works, no worker starts, no errors.
 ````
 
@@ -242,7 +245,7 @@ Verify with curl (needs a key and backfilled jobs; otherwise list as manual):
 - Repeat the same query: second call is fast (parse + embedding cache hits; check Redis keys `ai:parse:*` and `ai:emb:*`).
 - Soft-deleted and expired-deadline jobs never appear.
 - 21 requests in a minute from one IP -> 429.
-- Look at the returned `score` values for a few queries and report them (the developer may tune AI_SEARCH_MIN_SCORE).
+- Look at the returned `score` values for several relevant and several irrelevant queries and report them. Gemini similarity scores sit in a narrow, high band, so AI_SEARCH_MIN_SCORE defaults to 0 (rank only); the developer will tune it from your report.
 ````
 
 **Done when:**
@@ -322,8 +325,8 @@ Verify with curl (needs a key; otherwise list as manual):
 You are implementing Phase AI-9 of the Anvil AI features. Specs: ANVIL_spec.md and ANVIL_AI_spec.md. Phases AI-0..AI-8 are complete.
 
 1. Chains (AI spec §12.5, §13, §14.5-§14.8), each lazy, each accepting { signal }:
-   - chains/resumeTips.chain.js: generateResumeTips({ document, resumeText, analysis, signal }) (structured, ResumeTipsSchema, normalizeTips) and getResumeTips({ job, employerName, resume, analysis, signal }) -> { tips (the DTO: summary, tips, keywordsToConsider), cached } with cache key `ai:tips:<PROMPT_VERSION>:<resume.textHash>:<jobDocHash>` (TTL TIPS).
-   - chains/coverLetter.chain.js: writeCoverLetter(...) and reviseCoverLetter(...) using getWritingModel() + StringOutputParser (plain text, cleaned with cleanText), and critiqueCoverLetter(...) using the structured chat model + CritiqueSchema. critique returns { passed, unsupportedClaims, issues } where the code-level checks of §13 `reviewDraft` are appended to issues (placeholder regex /\[[^\]\n]{1,60}\]/, markdown regex /^\s*([#>*-]|\d+\.)\s|\*\*/m, word count outside [min*0.9, max*1.1] using the tone map, missing greeting /^\s*dear\b/i) and `passed` is recomputed in code.
+   - chains/resumeTips.chain.js: generateResumeTips({ document, resumeText, analysis, signal }) (structured, ResumeTipsSchema, normalizeTips) and getResumeTips({ job, employerName, resume, analysis, signal }) -> { tips (the DTO: summary, tips, keywordsToConsider), cached } with cache key `ai:tips:<PROMPT_VERSION>:<chatModel>:<resume.textHash>:<jobDocHash>` (TTL TIPS).
+   - chains/coverLetter.chain.js: writeCoverLetter(...) and reviseCoverLetter(...) using getWritingModel() and getText(message) from llm.js (plain text, cleaned with cleanText; NEVER StringOutputParser - with thought summaries enabled it leaks reasoning text into the letter), and critiqueCoverLetter(...) using the structured chat model + CritiqueSchema. critique returns { passed, unsupportedClaims, issues } where the code-level checks of §13 `reviewDraft` are appended to issues (placeholder regex /\[[^\]\n]{1,60}\]/, markdown regex /^\s*([#>*-]|\d+\.)\s|\*\*/m, word count outside [min*0.9, max*1.1] using the tone map, missing greeting /^\s*dear\b/i) and `passed` is recomputed in code.
 2. Graph: backend/src/ai/graphs/applicationAssistant.graph.js implementing §13 exactly: Annotation.Root state with the listed keys (revisions has reducer (_a, b) => b and default 0), nodes analyzeMatch / writeDraft / reviewDraft / reviseDraft / suggestTips, the conditional edges (always pass the explicit destination arrays), MAX_REVISIONS from constants. NODE NAMES MUST NOT EQUAL STATE KEYS (LangGraph throws) - use exactly the names in §13. Every node takes (state, config) and passes config?.signal to the chain calls. Compile once (lazy module-level singleton). Export runApplicationAssistant(input) which invokes with { signal: AbortSignal.timeout(GRAPH_TIMEOUT_MS), recursionLimit: GRAPH_RECURSION_LIMIT } and returns the mode-specific result from §13 (cover letter => { coverLetter, revisions, warnings }; tips => { summary, tips, keywordsToConsider, cached }).
 3. ai.schema.js: cover-letter body schema (tone enum default 'PROFESSIONAL'; notes optional trimmed string max COVER_LETTER_NOTES_MAX_CHARS, empty string => undefined).
 4. ai.service.js: generateCoverLetterForUser(userId, jobId, { tone, notes }) and generateResumeTipsForUser(userId, jobId) per §12.5 (load job + employer name -> 404; load Resume (text, textHash) and User.name -> 409 RESUME_REQUIRED; run the graph inside runAi). Return the DTOs of §11.3 #8/#9 (cover letter response includes tone).
@@ -336,7 +339,7 @@ Verify (needs a key; otherwise list as manual):
 - POST cover-letter for 3 different jobs with one resume: letters are plain text, start with "Dear Hiring Team,", end with "Sincerely," + the applicant's name, mention only facts from the resume, 220-320 words (CONCISE: 150-200), no [placeholders]. `notes: "I recently completed an AWS Cloud Practitioner certification"` makes the letter mention it.
 - Test the fact-check loop: temporarily force a bad draft in a test (e.g. unit-test reviewDraft with a draft that claims "10 years at Google") and confirm critique.unsupportedClaims is non-empty and the route returns `revisions: 1` and, if still failing, warnings.
 - resume-tips returns 4-8 tips with valid enums and keywordsToConsider <= 10; second call `cached:true`.
-- Aborting: set AI_REQUEST_TIMEOUT_MS=1 temporarily -> endpoint returns 504 with the friendly message (never raw provider text).
+- Aborting: set AI_REQUEST_TIMEOUT_MS=1 temporarily -> endpoint returns 504 with the friendly message (never raw provider text). Also confirm a cover letter never contains reasoning/thought text (only the letter).
 - Employer token -> 403; no resume -> 409 RESUME_REQUIRED; unknown job -> 404; 6th cover letter in a minute -> 429.
 ````
 
@@ -407,7 +410,7 @@ You are implementing Phase AI-12 of the Anvil AI features. Specs: ANVIL_spec.md 
 Verify manually:
 - Keyword tab behaves exactly as before (filters, URL params, pagination, clear).
 - AI tab: try the four example chips and 3 queries of your own; "Understood as" chips match the query; results are relevant; pagination works; the URL (?mode=ai&aq=...&page=2) is shareable - reloading shows the same results.
-- Break the backend key / stop OpenAI access: the error box appears and "Search by keywords instead" switches to the keyword tab with `q` prefilled and results shown.
+- Break the backend key (set an invalid GEMINI_API_KEY) or cause a quota error: the error box appears and "Search by keywords instead" switches to the keyword tab with `q` prefilled and results shown.
 - With AI disabled: no tabs are visible; the page is identical to the original.
 - `npm run build` and `npm run lint` clean.
 ````
@@ -479,10 +482,10 @@ Verify manually (applicant with a READY resume):
 ````
 You are implementing Phase AI-15 (final) of the Anvil AI features. Specs: ANVIL_spec.md and ANVIL_AI_spec.md. Phases AI-0..AI-14 are complete.
 
-1. README.md: add an "AI features" section (keep the existing README intact): feature list (F1-F5), architecture diagram (adapt AI spec §5), the new env vars table (§6), setup steps (pgvector image, migrate, key, backfill, smoke test), the cost-control notes (§17), the Nginx timeout/TRUST_PROXY notes (§19), privacy note (resume text goes to OpenAI; keep LangSmith tracing off), and the scripts (`npm run ai:smoke`, `npm run ai:backfill`, `npm test`). Update the tech-stack table with LangChain, LangGraph, OpenAI, pgvector.
+1. README.md: add an "AI features" section (keep the existing README intact): feature list (F1-F5), architecture diagram (adapt AI spec §5), the new env vars table (§6), setup steps (pgvector image, migrate, key, backfill, smoke test), the cost-control notes (§17), the Nginx timeout/TRUST_PROXY notes (§19), privacy note (resume text goes to Google's Gemini API; on the free tier Google may use it to improve its products, so use fictional resumes in development and enable billing before real users; keep LangSmith tracing off), and the scripts (`npm run ai:smoke`, `npm run ai:backfill`, `npm test`). Update the tech-stack table with LangChain, LangGraph, Google Gemini, pgvector.
 2. Review pass (fix only AI-related code you wrote):
-   - grep for `temperature`, `reasoningEffort`, `console.log(` of prompts/resume text, hard-coded model names outside config defaults, `req.query =`, and `COUNT(*)` without `::int` in backend/src/ai and backend/src/modules/{ai,resumes}; fix any hit.
-   - confirm no module constructs OpenAI clients at require-time (start the server with no key and with AI_ENABLED=false).
+   - grep for `temperature`, `reasoningEffort`, `thinkingBudget`, `StringOutputParser`, `openai`, `OPENAI`, `console.log(` of prompts/resume text, hard-coded model names outside config defaults, `req.query =`, and `COUNT(*)` without `::int` in backend/src/ai and backend/src/modules/{ai,resumes}; fix any hit.
+   - confirm no module constructs Gemini clients (`ChatGoogle`, `GoogleGenAI`) at require-time (start the server with no key and with AI_ENABLED=false).
    - confirm every AI route follows the middleware order of AI spec §10.1 and the limits of §11.2.
    - confirm the frontend makes NO AI request for guests except /api/ai/status, insights, similar and search (check the Network tab / axios calls while logged out).
 3. Run the complete verification checklist below and report each line as PASS / FAIL / MANUAL (with reason).
@@ -496,11 +499,11 @@ You are implementing Phase AI-15 (final) of the Anvil AI features. Specs: ANVIL_
 | # | Check | Expected |
 |---|---|---|
 | 1 | `cd backend && npm test` | all green |
-| 2 | Start backend with **no** `OPENAI_API_KEY` | boots; `GET /api/ai/status` → `{enabled:false}`; `/api/ai/search?q=react` → 503; existing endpoints (login, jobs, apply with upload, notifications, dashboard) work |
+| 2 | Start backend with **no** `GEMINI_API_KEY` | boots; `GET /api/ai/status` → `{enabled:false}`; `/api/ai/search?q=react` → 503; existing endpoints (login, jobs, apply with upload, notifications, dashboard) work |
 | 3 | Start with key, `npm run ai:smoke -- --full` | all PASS |
 | 4 | `npm run ai:backfill` then again | first enqueues all active jobs; second enqueues ~0; all `JobInsight` rows `READY` with embeddings |
 | 5 | Create/edit/soft-delete a job as employer | insight created/refreshed; unchanged edit makes no LLM call; deleted jobs never appear in AI results |
-| 6 | AI search: 5 varied queries (incl. salary, location, job type, remote) | filters interpreted correctly; relevant ordering; pagination; fallback button works when OpenAI is unreachable |
+| 6 | AI search: 5 varied queries (incl. salary, location, job type, remote) | filters interpreted correctly; relevant ordering; pagination; fallback button works when Gemini is unreachable or over quota |
 | 7 | Similar jobs on 3 job pages | ≤ 5 relevant jobs, never the same job |
 | 8 | Resume: upload / replace / delete / blank PDF / fake PDF / >5 MB | correct statuses and messages; `GET /api/resumes/me` never exposes text/error/embedding |
 | 9 | Recommendations | ranked, exclude applied jobs, correct for NONE/PENDING/FAILED/READY |

@@ -4,16 +4,15 @@
 >
 > Read together with `ANVIL_AI_implementation_plan.md`. Section numbers (§) are referenced from the plan.
 >
-> Facts in this document were verified on **2026-11-22** against the real codebase (`Anvil.rar`), the installed packages and a local PostgreSQL + pgvector instance. Where a fact came from an experiment it is marked **(verified)**.
-
-
-**Contents:** 1 Overview · 2 Scope · 3 Existing system facts · 4 Technology decisions · 5 Architecture · 6 Environment variables · 7 Database · 8 Shared AI library · 9 Queue & worker · 10 Middleware · 11 API reference · 12 Feature specs (F1–F5) · 13 LangGraph assistant · 14 Prompt library · 15 Frontend · 16 Touchpoints in existing code · 17 Security/privacy/cost · 18 Scripts & testing · 19 Operations · 20 Known issues & future work
+> **Provider: Google Gemini (free tier) — revision of 2026-11-24.** This document originally targeted OpenAI. The project now uses **Gemini** for every chat and embedding call and does not plan to return to OpenAI. Phases AI-0 to AI-3 had already been implemented against OpenAI; `ANVIL_AI_gemini_migration.md` converts that code. Everything below describes the **Gemini target state**.
+>
+> Facts in this document were verified on **2026-11-22** (codebase, PostgreSQL + pgvector, LangChain/LangGraph) and **2026-11-24** (Gemini docs; `@langchain/google`, `@google/genai` and BullMQ behaviour tested against mock servers and a local Redis). Where a fact came from an experiment it is marked **(verified)**. What can only be checked against the real Gemini API is covered by `npm run ai:smoke` (§18.1).
 
 ---
 
 ## 1. Overview & goals
 
-Add five AI features to the Anvil job board using **LangChain (+ LangGraph where a real graph is needed) and OpenAI**:
+Add five AI features to the Anvil job board using **LangChain (+ LangGraph where a real graph is needed) and Google Gemini (free tier)**:
 
 | # | Feature | Who | Where it appears |
 |---|---|---|---|
@@ -23,7 +22,7 @@ Add five AI features to the Anvil job board using **LangChain (+ LangGraph where
 | F4 | **Resume matching** — (a) *Recommended jobs* ranked from the applicant's saved resume, (b) *Fit analysis* ("am I a fit for this job?") | Applicant | Profile (resume upload), `/recommended` page, job detail page |
 | F5 | **Tailored cover letter + resume tips** for a specific job | Applicant | Apply modal (cover letter), job detail page (resume tips) |
 
-Design goals: correct and safe first (no fabricated claims in cover letters, no leaked PII), cheap to run (small model, caching, rate limits, daily cap), degrade gracefully (the app must work with AI turned off or OpenAI down), and match the existing code conventions.
+Design goals: correct and safe first (no fabricated claims in cover letters, no leaked PII), free to run on the Gemini free tier (small model, caching, rate limits, daily cap, quota-aware worker), degrade gracefully (the app must work with AI turned off, or with Gemini unavailable or over quota), and match the existing code conventions.
 
 ---
 
@@ -69,31 +68,42 @@ These were read from the actual code; do not assume otherwise.
 
 | Package | Purpose | Notes |
 |---|---|---|
-| `@langchain/core` | prompts, runnables, parsers | versions verified: 1.5.x |
-| `@langchain/openai` | `ChatOpenAI`, `OpenAIEmbeddings` | verified: 1.8.x |
+| `@langchain/core` | prompts, runnables | verified: 1.5.x |
+| `@langchain/google` | `ChatGoogle` — Gemini chat models and structured output | verified: 0.2.x. The package LangChain now recommends for **all new Gemini integrations** (it replaces `@langchain/google-genai` and `@langchain/google-vertexai`). Import the Node entry point: `const { ChatGoogle } = require('@langchain/google/node')` |
+| `@google/genai` | official Google SDK — used **only for embeddings** | verified: 3.x. `@langchain/google` has no embeddings class, so embeddings call `ai.models.embedContent(...)` directly (§8.7) |
 | `@langchain/langgraph` | `StateGraph` for the application assistant (§13) | verified: 1.7.x; peer `zod ^3.25 \|\| ^4.2` is satisfied by the existing Zod 4 |
 | `pdf-parse` (**v2 API**) | extract text from resume PDFs | verified: 2.4.x; `const { PDFParse } = require('pdf-parse')` |
 
-Install with `npm install` (latest compatible) and keep the resolved caret ranges in `package.json`. **Do not install** `langchain` (umbrella package), `@langchain/community`, `openai` (direct), `pg`, `pgvector`, `pdfjs-dist`. Not needed.
+Install with `npm install` (latest compatible) and keep the resolved caret ranges in `package.json`. **Do not install** `@langchain/openai`, `openai`, `@langchain/google-genai` (legacy), `@langchain/google-vertexai`, `langchain` (umbrella package), `@langchain/community`, `pg`, `pgvector`, `pdfjs-dist`. Not needed.
 
-All of the above load with plain `require()` in CommonJS **(verified)**. Requires **Node ≥ 22.3** (the installed `@langchain/openai` declares `engines.node >= 22` and `pdf-parse` declares `>=22.3.0` (or 20.16+ on the 20 line) **(verified from the package manifests)**; Node 22 LTS is the target). Add `"engines": { "node": ">=22.3.0" }` to `backend/package.json`. **Anywhere the backend runs (your machine, Docker image, VPS) must use Node ≥ 22.3.**
+All of the above load with plain `require()` in CommonJS **(verified)**. Node requirement: **Node ≥ 22.3** (`@google/genai` declares `engines.node >= 22`; `pdf-parse` declares `>=22.3.0` (or 20.16+ on the 20 line) **(verified from the package manifests)**; Node 22 LTS is the target). `backend/package.json` has `"engines": { "node": ">=22.3.0" }`. **Anywhere the backend runs (your machine, Docker image, VPS) must use Node ≥ 22.3.**
 
 No new frontend packages.
 
-### 4.2 Models (verified against OpenAI docs on 2026-11-22)
+### 4.2 Models and Gemini API behaviour (verified against Google's docs and test runs on 2026-11-24)
 
-- **Chat:** `gpt-6-luna` (OpenAI's most efficient model for high-volume tasks, ≈ $0.10 / $0.50 per 1M input/output tokens, structured outputs supported). It is a **reasoning model**, so:
-  - never send `temperature` (do not set it anywhere);
-  - control cost/latency with reasoning effort: `ChatOpenAI({ reasoning: { effort: 'low' } })` → sent as `reasoning_effort` on Chat Completions **(verified)**. The legacy `reasoningEffort` constructor option is **ignored** by the installed version — do not use it;
-  - on Chat Completions, **function calling is only allowed when reasoning effort is `none`**, so structured output must use the JSON-schema response format: `withStructuredOutput(schema, { method: 'jsonSchema', strict: true })` **(verified: sends `response_format: { type: 'json_schema', ... }`)**. Never use the default `functionCalling` method.
-- **Embeddings:** `text-embedding-3-small`, requested with `dimensions: 1536` (still active, not deprecated).
-- The older `gpt-5-mini`, `gpt-5-nano`, `gpt-4o`, `gpt-4o-mini` are being retired (Dec 2026 – Jan 2027). Do not use them.
-- Model names are configuration (§6), never hard-coded in feature code.
+**Chat model — `gemini-3.5-flash-lite` (default).** Free of charge on the free tier (input and output), supports structured outputs and thinking, 1M-token input / 64K-token output. For nicer cover-letter prose you may set `GEMINI_WRITING_MODEL=gemini-3.8-flash` (Google's most capable Flash model; thinking levels low/medium/high — **not** `minimal`) **if your free tier allows it** (check AI Studio). Do not use: Gemini 2.5 models (Google now restricts them to projects that already used them), `gemini-2.0-*` and `gemini-3.1-flash-lite-preview` (shut down). Model IDs are configuration (§6), never hard-coded in feature code.
+
+Behaviour of `ChatGoogle` the code must respect (all **verified**):
+- Construct it with `platformType: 'gai'` (Google AI Studio key) and `apiKey`. Never set `temperature` (Gemini 3 models are tuned for their default).
+- **Structured output:** `model.withStructuredOutput(schema, { method: 'jsonSchema', name })`. It sends `generationConfig.responseMimeType = 'application/json'` plus `responseJsonSchema` (Zod 4 → JSON Schema; `.nullable()` becomes `type: ['string','null']` / `anyOf`). Never use the default method (`functionCalling`).
+- **Thinking:** pass `thinkingLevel` (`minimal|low|medium|high`) → sent as `thinkingConfig.thinkingLevel`. Every level except `minimal` also sets `includeThoughts: true`, so responses then contain thought-summary blocks. For models without `minimal` support (e.g. `gemini-3.8-flash`) LangChain upgrades `minimal` to `low`. (`thinkingBudget` is the Gemini 2.5 mechanism — do not use.) Model defaults when nothing is sent: `gemini-3.5-flash-lite` = minimal, `gemini-3.8-flash` = medium.
+- **Plain-text output:** read **`message.text`** (it excludes thought blocks). **Never use `StringOutputParser` with Gemini**: with thought summaries enabled it concatenates the thought text into the answer (verified — it would leak "reasoning" text into cover letters). Structured output is not affected (verified).
+- **The `timeout` constructor option is NOT honoured** (verified: a hanging request was never aborted). **Every call must pass `{ signal }`** (an `AbortSignal`), which works (verified) — see `callOptions()` in §8.6.
+- `maxRetries` is honoured: it retries 5xx responses (with a ~1 s delay) but **not 429** (verified). Use `maxRetries: 2`.
+- Errors are `RequestError` objects with **`statusCode`** (not `status`), `data.error.status` and, for quota errors, `rateLimitType`. A blocked prompt raises `PromptBlockedError`. A response cut off by a token limit returns **empty content without raising** (verified) → empty output must be treated as a failure.
+
+**Embedding model — `gemini-embedding-2` (default; only text is embedded).** Free tier, 8,192-token input limit, Matryoshka dimensions 128–3072 (recommended 768/1536/3072). We request **`outputDimensionality: 1536`**, so the existing `vector(1536)` columns and HNSW index stay valid (**no database migration**). It auto-normalizes truncated vectors and does **not** accept `taskType`: the retrieval role is expressed with text prefixes — queries `task: search result | query: <text>`, documents `title: <title or none> | text: <text>`. Pass exactly **one string per call** (an array is aggregated into a single embedding — verified in the SDK request). Alternative: `gemini-embedding-001` (text-only, 2,048-token limit, uses `taskType` `RETRIEVAL_QUERY` / `RETRIEVAL_DOCUMENT`, and its truncated vectors must be normalized manually — the code normalizes in every case). Vectors from different embedding models are **not comparable**; changing the model requires re-embedding (§19). Via `@google/genai`, `embedContent` posts to `/v1/models/<model>:batchEmbedContents`; errors are `ApiError` objects with `.status`; an `abortSignal` in `config` aborts the call (all verified).
+
+**Free-tier facts you must design around**
+- Rate limits (requests/minute, tokens/minute, requests/day) apply per **project** and per model. Google no longer publishes the free-tier numbers in its docs — read yours at <https://aistudio.google.com/rate-limit>. Daily quotas reset at midnight Pacific time. Exceeding any limit returns **HTTP 429 `RESOURCE_EXHAUSTED`**.
+- Consequences in this design: the worker is rate-limited and pauses the whole queue when it gets a 429 (§9.2, verified with BullMQ 5), caching is mandatory (§8.5), the HTTP daily cap defaults low (§6), and the UI degrades gracefully (§11.4, §15.4).
+- **Data use:** on the free tier Google *may use prompts and responses to improve its products*; the paid tier does not. Read §17 before real users upload resumes.
 
 ### 4.3 Database: pgvector
 
 - PostgreSQL 15 + the `vector` extension. Docker image changes from `postgres:15` to **`pgvector/pgvector:pg15`** (same major version → the existing `postgres_data` volume keeps working).
-- Embedding dimension is fixed at **1536** (constant `EMBEDDING_DIMENSIONS`; column type `vector(1536)`).
+- Embedding dimension is fixed at **1536** (constant `EMBEDDING_DIMENSIONS`; column type `vector(1536)`); Gemini is asked for 1536 dimensions through `outputDimensionality` (§4.2).
 - Similarity metric: **cosine distance** (`<=>`), `score = 1 - distance`. HNSW index with `vector_cosine_ops` on `"JobInsight"."embedding"`.
 - Vector columns are Prisma `Unsupported("vector(1536)")?`: Prisma can neither read nor write them, so **all vector reads/writes use raw SQL** (§8.8). The raw SQL in this spec was executed against a real PostgreSQL 16 + pgvector instance **(verified)**: migration, filters with enum casts, `ILIKE`, `COUNT(*)::int`, similar jobs, recommendations, HNSW index usage, cascade delete, wrong-dimension rejection.
 
@@ -106,7 +116,7 @@ No new frontend packages.
 | Resume profile extraction (F4) | LangChain chain | single structured call |
 | Fit analysis (F4) | LangChain chain + Redis cache | single structured call |
 | **Cover letter + resume tips (F5)** | **LangGraph `StateGraph`** (§13) | conditional routing by mode, plus a bounded **write → fact-check → revise** cycle that prevents fabricated experience in cover letters |
-| Embeddings | `OpenAIEmbeddings` | |
+| Embeddings | `@google/genai` `embedContent` (§8.7) | `@langchain/google` has no embeddings class |
 | Vector search | our own SQL (§8.8) | full control of filters; no LangChain vector-store abstraction |
 
 Not used: agents/tools, LangGraph checkpointers/persistence (graph runs are stateless and finish within one HTTP request), LangSmith.
@@ -129,7 +139,7 @@ Not used: agents/tools, LangGraph checkpointers/persistence (graph runs are stat
 │                                                                                            │
 │   src/ai/  (LangChain chains · LangGraph graph · embeddings · prompts · cache · SQL repo)  │
 └───────┬─────────────────────────────┬──────────────────────────────┬──────────────────────┘
-        │ Prisma + raw SQL            │ BullMQ queue "ai"            │ OpenAI (chat + embeddings)
+        │ Prisma + raw SQL            │ BullMQ queue "ai"            │ Gemini API (chat + embeddings)
 ┌───────▼──────────┐          ┌───────▼───────────┐                  │
 │ PostgreSQL 15    │          │ AI worker         │──────────────────┘
 │ + pgvector       │◄─────────│ process-job       │  (same Node process as the API, like the
@@ -140,7 +150,7 @@ Not used: agents/tools, LangGraph checkpointers/persistence (graph runs are stat
 
 **Write path (async):** job create/update → `enqueueJobProcessing(jobId)` → worker computes insights (LLM) + embedding in parallel → stored in `JobInsight`. Resume upload → text extracted synchronously → `enqueueResumeProcessing(userId)` → worker extracts a structured profile (LLM) + embedding → stored in `Resume`.
 
-**Read path (sync):** search, similar jobs and recommendations are SQL over stored vectors; fit analysis, cover letter and tips call OpenAI inside the request (cached where deterministic).
+**Read path (sync):** search, similar jobs and recommendations are SQL over stored vectors; fit analysis, cover letter and tips call Gemini inside the request (cached where deterministic).
 
 **Idempotency:** every worker job recomputes a content hash and exits early when nothing changed, so duplicate/retried jobs are cheap and safe.
 
@@ -152,38 +162,47 @@ Add to `backend/.env.example` (and document in the README):
 
 ```env
 # ── AI (all optional; the app runs normally without them, AI features are then disabled) ──
-OPENAI_API_KEY=
+# Get a key at https://aistudio.google.com/apikey (GOOGLE_API_KEY is accepted as a fallback name).
+GEMINI_API_KEY=
 AI_ENABLED=true
-OPENAI_CHAT_MODEL=gpt-6-luna
-# Model used for writing cover letters. Defaults to OPENAI_CHAT_MODEL. Try gpt-6.1-terra for nicer prose.
-OPENAI_WRITING_MODEL=
-OPENAI_EMBEDDING_MODEL=text-embedding-3-small
-# none | low | medium | high. Leave EMPTY to not send the parameter (required for non-reasoning models).
-OPENAI_REASONING_EFFORT=low
+GEMINI_CHAT_MODEL=gemini-3.5-flash-lite
+# Model used for writing cover letters. Defaults to GEMINI_CHAT_MODEL. Try gemini-3.8-flash for nicer prose if your free tier allows it.
+GEMINI_WRITING_MODEL=
+# gemini-embedding-2 (default) or gemini-embedding-001. Output is always 1536-dimensional.
+GEMINI_EMBEDDING_MODEL=gemini-embedding-2
+# minimal | low | medium | high. Leave EMPTY to not send the parameter (model default).
+GEMINI_THINKING_LEVEL=low
 AI_REQUEST_TIMEOUT_MS=60000
-AI_SEARCH_MIN_SCORE=0.15
-AI_DAILY_REQUEST_CAP=2000
-AI_WORKER_CONCURRENCY=2
+# Minimum cosine similarity for AI-search results. 0 = rank only (tune after the first backfill).
+AI_SEARCH_MIN_SCORE=0
+# Max LLM-invoking HTTP requests per UTC day. Keep it well below your free-tier requests-per-day (see AI Studio).
+AI_DAILY_REQUEST_CAP=100
+AI_WORKER_CONCURRENCY=1
+# Max background AI jobs started per minute (each uses ~1 chat call + 1 embedding call).
+AI_WORKER_RATE_PER_MINUTE=6
 # Number of reverse-proxy hops in front of the API (e.g. 1 behind Nginx). Needed for correct per-IP rate limiting.
 TRUST_PROXY=
-# PRIVACY: never set LANGSMITH_TRACING / LANGCHAIN_TRACING_V2 — prompts contain resume text.
+# PRIVACY: on the Gemini FREE tier Google may use prompts/responses to improve its products.
+# Use fictional resumes while developing and enable billing (paid tier) before real users upload resumes.
+# Never set LANGSMITH_TRACING / LANGCHAIN_TRACING_V2 either — prompts contain resume text.
 ```
 
 | Variable | Default | Rules |
 |---|---|---|
-| `OPENAI_API_KEY` | – | AI is **active** only if `AI_ENABLED === true` **and** this is non-empty. |
+| `GEMINI_API_KEY` | – | AI is **active** only if `AI_ENABLED === true` **and** a key is present (`GEMINI_API_KEY`, else `GOOGLE_API_KEY`). |
 | `AI_ENABLED` | `true` | string `'true'`/`'false'` |
-| `OPENAI_CHAT_MODEL` | `gpt-6-luna` | |
-| `OPENAI_WRITING_MODEL` | = chat model | empty string ⇒ chat model |
-| `OPENAI_EMBEDDING_MODEL` | `text-embedding-3-small` | must support the `dimensions` parameter (`-3-small`/`-3-large`); output is always 1536-d |
-| `OPENAI_REASONING_EFFORT` | `low` | variable **absent** ⇒ `low`; `none`/`low`/`medium`/`high` ⇒ that value; variable present but **empty** ⇒ parameter not sent (needed for non-reasoning models) |
-| `AI_REQUEST_TIMEOUT_MS` | `60000` | per OpenAI call |
-| `AI_SEARCH_MIN_SCORE` | `0.15` | minimum cosine similarity for AI-search results; tune by looking at real scores |
-| `AI_DAILY_REQUEST_CAP` | `2000` | max LLM-invoking HTTP requests per UTC day (§10.2) |
-| `AI_WORKER_CONCURRENCY` | `2` | |
+| `GEMINI_CHAT_MODEL` | `gemini-3.5-flash-lite` | |
+| `GEMINI_WRITING_MODEL` | = chat model | empty string ⇒ chat model |
+| `GEMINI_EMBEDDING_MODEL` | `gemini-embedding-2` | `gemini-embedding-2` or `gemini-embedding-001` (§8.7); output is always 1536-d |
+| `GEMINI_THINKING_LEVEL` | `low` | variable **absent** ⇒ `low`; `minimal`/`low`/`medium`/`high` ⇒ that value; variable present but **empty** ⇒ parameter not sent (model default) |
+| `AI_REQUEST_TIMEOUT_MS` | `60000` | per-call `AbortSignal` timeout (§8.6) — the SDK `timeout` option is not used |
+| `AI_SEARCH_MIN_SCORE` | `0` | minimum cosine similarity for AI-search results; Gemini similarity scores sit in a narrow, high band, so start at `0` (rank only) and tune from real scores |
+| `AI_DAILY_REQUEST_CAP` | `100` | max LLM-invoking HTTP requests per UTC day (§10.2); worker calls and multi-call endpoints also consume your Gemini quota, so keep this well below your daily limit |
+| `AI_WORKER_CONCURRENCY` | `1` | |
+| `AI_WORKER_RATE_PER_MINUTE` | `6` | BullMQ limiter `max` per 60 s (§9.2); raise it only if AI Studio shows headroom |
 | `TRUST_PROXY` | empty | integer hop count; empty ⇒ `trust proxy` not set |
 
-**Inactive AI behaviour (must hold):** the API boots and every existing feature works with no OpenAI key. Then: `/api/ai/*` (except `/status`) and `/api/resumes/*` return **503** `AI features are not enabled`; `GET /api/ai/status` returns `{ enabled: false }`; the worker is not started; enqueue helpers are no-ops; no `ChatOpenAI`/`OpenAIEmbeddings` object is ever constructed (create them lazily — the constructors throw without a key).
+**Inactive AI behaviour (must hold):** the API boots and every existing feature works with no Gemini key. Then: `/api/ai/*` (except `/status`) and `/api/resumes/*` return **503** `AI features are not enabled`; `GET /api/ai/status` returns `{ enabled: false }`; the worker is not started; enqueue helpers are no-ops; no `ChatGoogle` / `GoogleGenAI` object is ever constructed (create them lazily).
 
 ---
 
@@ -319,14 +338,14 @@ Resume has no vector index (it is only ever used as a single query vector).
 
 ## 8. Backend — shared AI library (`backend/src/ai/`)
 
-`src/ai/` is the framework layer (OpenAI, LangChain, LangGraph, pgvector SQL, caching). `src/modules/ai/` and `src/modules/resumes/` (§11) are the HTTP layer and only call into `src/ai/`.
+`src/ai/` is the framework layer (Gemini, LangChain, LangGraph, pgvector SQL, caching). `src/modules/ai/` and `src/modules/resumes/` (§11) are the HTTP layer and only call into `src/ai/`.
 
 ### 8.1 New backend files
 
 ```
 backend/
 ├── scripts/
-│   ├── ai-smoke.js                    # live OpenAI check (§18.1)
+│   ├── ai-smoke.js                    # live Gemini check (§18.1)
 │   └── ai-backfill.js                 # enqueue existing jobs/resumes (§18.2)
 ├── test/ai/                           # node:test unit tests for pure functions (§18.3)
 └── src/
@@ -353,7 +372,7 @@ All files are CommonJS (`require`/`module.exports`), plain JS, 2-space indent, s
 ```js
 module.exports = {
   EMBEDDING_DIMENSIONS: 1536,
-  EMBEDDING_INPUT_MAX_CHARS: 24000,
+  EMBEDDING_INPUT_MAX_CHARS: 6000,   // ≈1.5k tokens: inside the limits of both Gemini embedding models
   JOB_DESCRIPTION_MAX_CHARS: 6000,
   RESUME_TEXT_MAX_CHARS: 20000,      // stored in DB
   RESUME_PROMPT_MAX_CHARS: 12000,    // sent to the LLM
@@ -366,9 +385,10 @@ module.exports = {
   COVER_LETTER_NOTES_MAX_CHARS: 500,
   MAX_REVISIONS: 1,                  // cover-letter revise cycles (§13)
   GRAPH_RECURSION_LIMIT: 15,
+  WORKER_RATE_LIMIT_PAUSE_MS: 60000, // minimum queue pause after a Gemini 429 (§9.2)
   GRAPH_TIMEOUT_MS: 90000,
   SYNC_REQUEST_TIMEOUT_MS: 45000,    // overall AbortSignal for single-call endpoints (search, fit)
-  PROMPT_VERSION: 'v1',              // bump to invalidate caches + regenerate insights on prompt changes
+  PROMPT_VERSION: 'v2',              // bump to invalidate caches + regenerate insights on prompt changes ('v1' = OpenAI era)
   CACHE_TTL_SECONDS: { EMBEDDING: 86400, QUERY_PARSE: 3600, FIT: 604800, TIPS: 604800 },
   FIT_BANDS: { STRONG_FIT: 75, GOOD_FIT: 55, PARTIAL_FIT: 35 },   // below PARTIAL_FIT ⇒ WEAK_FIT
   QUEUE_NAME: 'ai',
@@ -384,28 +404,31 @@ module.exports = {
 
 ### 8.3 `config.js`
 
-Loads `dotenv` itself (`require('dotenv').config()` — harmless if already loaded; scripts need it), validates with Zod, and exports a frozen `aiConfig` **and** a pure `buildConfig(env)` function (used by unit tests; `aiConfig = Object.freeze(buildConfig(process.env))`):
+Loads `dotenv` itself (`require('dotenv').config({ quiet: true })` — harmless if already loaded, `quiet` silences dotenv 17's log line; scripts need it), validates with Zod, and exports a frozen `aiConfig` **and** a pure `buildConfig(env)` function (used by unit tests; `aiConfig = Object.freeze(buildConfig(process.env))`):
 
 ```js
 { enabled, active, apiKey, chatModel, writingModel, embeddingModel,
-  reasoningEffort /* string | undefined */, requestTimeoutMs, searchMinScore,
-  dailyRequestCap, workerConcurrency }
+  thinkingLevel /* string | undefined */, requestTimeoutMs, searchMinScore,
+  dailyRequestCap, workerConcurrency, workerRatePerMinute }
 ```
 
-`active = enabled && apiKey.length > 0`. Invalid values (e.g. non-numeric timeout) throw a clear startup error naming the variable.
+`active = enabled && apiKey.length > 0` where `apiKey = GEMINI_API_KEY || GOOGLE_API_KEY || ''`. `thinkingLevel`: variable absent ⇒ `'low'`; present but empty ⇒ `undefined`; otherwise one of `minimal|low|medium|high` (anything else is a validation error). `GEMINI_WRITING_MODEL` empty ⇒ the chat model. `GEMINI_EMBEDDING_MODEL` must be `gemini-embedding-2` or `gemini-embedding-001`. Invalid values (e.g. non-numeric timeout) throw a clear startup error naming the variable.
 
 ### 8.4 `errors.js`
 
-`toApiError(err)` converts any error from an LLM/embedding call into an `ApiError` **without leaking provider details**:
+`toApiError(err)` converts any error from an LLM/embedding call into an `ApiError` **without leaking provider details**. Two error families exist (§4.2): `ChatGoogle` throws `RequestError` (HTTP code in **`statusCode`**), `@google/genai` throws `ApiError` (HTTP code in **`status`**) — read `err.statusCode ?? err.status`.
 
 | Condition | Result |
 |---|---|
-| already an `ApiError` | returned unchanged |
+| already an app `ApiError` (`err instanceof require('../utils/ApiError')`) | returned unchanged |
 | `err.name` is `AbortError`/`TimeoutError`, or message contains `timed out`/`aborted` | `ApiError(504, 'The AI request timed out. Please try again.')` |
-| `err.status === 429` or `err.code === 'insufficient_quota'` | `ApiError(503, 'The AI service is busy right now. Please try again shortly.')` |
-| anything else | `ApiError(502, 'The AI service failed to respond. Please try again.')` |
+| HTTP code `429` (or `RESOURCE_EXHAUSTED` in the Google error body) | `ApiError(503, 'The AI service is busy right now. Please try again shortly.')` |
+| `err.name === 'PromptBlockedError'` | `ApiError(422, 'This content could not be processed by the AI service.')` |
+| anything else (incl. `EmptyModelOutputError`, HTTP 4xx/5xx) | `ApiError(502, 'The AI service failed to respond. Please try again.')` |
 
-The original error is `console.error`ed (message only — never prompts, resume text or the API key).
+The original error is `console.error`ed (message only, truncated to 300 chars — never prompts, resume text or the API key).
+
+Also exported (used by the worker, §9.2): `isRateLimitError(err)` (HTTP 429, or `RESOURCE_EXHAUSTED` in the Google error body) and `getRetryDelayMs(err)` → milliseconds from the `RetryInfo.retryDelay` entry (e.g. `"12.5s"` → `12500`) of the Google error body (`err.data.error.details` for `ChatGoogle`; the JSON body inside `err.message` for `@google/genai`), else `null`. Headers are not read. And `class EmptyModelOutputError extends Error` (thrown by `getText`, §8.6).
 
 `runAi(fn)` = `try { return await fn(); } catch (e) { throw toApiError(e); }`.
 
@@ -415,25 +438,28 @@ The original error is `console.error`ed (message only — never prompts, resume 
 
 | Key | TTL | Value |
 |---|---|---|
-| `ai:emb:<embeddingModel>:<sha256(text)>` | 24 h | `number[1536]` |
-| `ai:parse:<PROMPT_VERSION>:<sha256(lowercase trimmed query)>` | 1 h | parsed search query (§12.2) |
-| `ai:fit:<PROMPT_VERSION>:<resume.textHash>:<jobDocHash>` | 7 d | fit analysis (§12.4) |
-| `ai:tips:<PROMPT_VERSION>:<resume.textHash>:<jobDocHash>` | 7 d | resume tips (§12.5) |
+| `ai:emb:<embeddingModel>:q:<sha256(text)>` | 24 h | `number[1536]` (query-format embeddings only; `q` marks the query role) |
+| `ai:parse:<PROMPT_VERSION>:<chatModel>:<sha256(lowercase trimmed query)>` | 1 h | parsed search query (§12.2) |
+| `ai:fit:<PROMPT_VERSION>:<chatModel>:<resume.textHash>:<jobDocHash>` | 7 d | fit analysis (§12.4) |
+| `ai:tips:<PROMPT_VERSION>:<chatModel>:<resume.textHash>:<jobDocHash>` | 7 d | resume tips (§12.5) |
 
 `jobDocHash = sha256(buildJobDocument(job, employerName))`.
 
 ### 8.6 `llm.js` (lazy singletons)
 
 ```js
-getChatModel()      // ChatOpenAI for structured extraction/analysis
-getWritingModel()   // ChatOpenAI for cover-letter prose (same instance if models are equal)
-getEmbeddings()     // OpenAIEmbeddings
-structured(model, schema, name)  // model.withStructuredOutput(schema, { method: 'jsonSchema', strict: true, name })
+const { ChatGoogle } = require('@langchain/google/node');
+
+getChatModel()      // ChatGoogle for structured extraction/analysis
+getWritingModel()   // ChatGoogle for cover-letter prose (same instance if the models are equal)
+structured(model, schema, name)  // model.withStructuredOutput(schema, { method: 'jsonSchema', name })
+callOptions(signal) // → { signal: AbortSignal.any([signal, AbortSignal.timeout(requestTimeoutMs)].filter(Boolean)) }
+getText(message)    // → message.text.trim(); throws EmptyModelOutputError if empty
 ```
 
-`ChatOpenAI` options: `{ model, apiKey, maxRetries: 2, timeout: aiConfig.requestTimeoutMs }` plus `reasoning: { effort }` **only when** `aiConfig.reasoningEffort` is set. **Never** pass `temperature`. `OpenAIEmbeddings`: `{ model, apiKey, dimensions: 1536, batchSize: 64, maxRetries: 2, timeout }`.
+`ChatGoogle` options: `{ model, apiKey, platformType: 'gai', maxRetries: 2 }` plus `thinkingLevel` **only when** `aiConfig.thinkingLevel` is set. **Never** pass `temperature`, `timeout` (ignored — §4.2), `endpoint`, `reasoningEffort` or `thinkingBudget`.
 
-Every chain call passes `{ signal }` (an `AbortSignal`) when one is available.
+**Every model invocation must be `chain.invoke(input, callOptions(signal))`** (or `model.invoke(messages, callOptions(signal))`), so no call can hang: a caller-supplied signal (e.g. the graph's) is combined with a per-call timeout of `AI_REQUEST_TIMEOUT_MS`. Plain-text results are read with `getText(message)` — **never `StringOutputParser`** (§4.2). Chains that produce structured output need no text extraction.
 
 ### 8.7 `text.js`, `vector.js`, `embeddings.js`, `pdf.js`
 
@@ -454,11 +480,26 @@ Skills: <skills joined by ", ">                        (omit line if empty)
 Description:
 <description cleaned, truncated to JOB_DESCRIPTION_MAX_CHARS>
 ```
+- `formatEmbeddingInput({ model, role, text, title })` → `{ contents, taskType }` (pure; the only place the role/prefix rules of §8.7 live): for `gemini-embedding-2` ⇒ role `'document'` → `title: ${title || 'none'} | text: ${text}`, role `'query'` → `task: search result | query: ${text}`, `taskType: undefined`; for any other model (`gemini-embedding-001`) ⇒ `contents: text`, `taskType: 'RETRIEVAL_DOCUMENT' | 'RETRIEVAL_QUERY'`. `embeddings.js` calls it.
 - `buildResumeEmbeddingText(profile, rawText)`: if `profile` exists → lines `Headline:`, `Summary:`, `Skills:`, `Experience:` (`title at company; …`), `Education:` (omit empty ones) followed by `Resume excerpt:\n` + `truncate(rawText, RESUME_EMBED_RAW_CHARS)`; if `profile` is `null` → `truncate(rawText, RESUME_EMBED_RAW_CHARS * 3)`.
 
-`vector.js`: `toVectorLiteral(arr)` → `'[0.1,0.2,…]'`; throws if length ≠ 1536 or any value is not a finite number.
+`vector.js`: `toVectorLiteral(arr)` → `'[0.1,0.2,…]'` (throws if length ≠ 1536 or any value is not a finite number) and `l2Normalize(arr)` → a new array scaled to unit length (a zero vector is returned unchanged). Both pure and unit-tested.
 
-`embeddings.js`: `embedDocument(text)` (no cache) and `embedQuery(text)` (Redis cache, §8.5). Both truncate input to `EMBEDDING_INPUT_MAX_CHARS`, reject empty input, and validate the returned length (1536).
+`embeddings.js` — Gemini embeddings through `@google/genai` (lazy singleton `new GoogleGenAI({ apiKey })`):
+
+```js
+embedDocument(text, { title, signal } = {})        // document role, never cached
+embedQuery(text, { cache = true, signal } = {})    // query role; Redis cache when cache === true (§8.5)
+```
+
+Behaviour of both (verified request shapes, §4.2):
+1. Reject empty/whitespace input; `text = truncate(cleanText(text), EMBEDDING_INPUT_MAX_CHARS)`.
+2. Format with `formatEmbeddingInput` (`text.js`; `isV2 = /embedding-2/.test(model)`): **v2** ⇒ documents `title: ${title || 'none'} | text: ${text}`, queries `task: search result | query: ${text}`, **no** `taskType`; **001** ⇒ raw text plus `taskType: 'RETRIEVAL_DOCUMENT'` / `'RETRIEVAL_QUERY'`.
+3. `const res = await ai.models.embedContent({ model, contents: formattedString, config: { outputDimensionality: 1536, abortSignal: AbortSignal.any([signal, AbortSignal.timeout(requestTimeoutMs)].filter(Boolean)), ...(isV2 ? {} : { taskType }) } })` — **`contents` must be a single string** (an array is aggregated into one embedding). Vector = `res.embeddings[0].values`; anything else ⇒ throw.
+4. Retry: up to 2 retries (1 s then 2 s) on HTTP 500/503/504 and network errors; **no retry on 429** (the caller handles quota, §9.2/§8.4).
+5. Validate length 1536, then `l2Normalize` (required for `-001` at 1536 dimensions, harmless for v2) and return the array.
+
+Role usage: job vectors ⇒ `embedDocument(doc, { title: job.title })`; search text ⇒ `embedQuery(semanticQuery)`; a **resume vector is embedded in the query role** (`embedQuery(text, { cache: false })`, because it is used as the *query* when ranking jobs; never cache resume vectors in Redis).
 
 `pdf.js`: `extractPdfText(buffer)` → cleaned text (≤ `RESUME_TEXT_MAX_CHARS`):
 1. `new PDFParse({ data: buffer })`, `await parser.getText({ first: RESUME_MAX_PDF_PAGES })` raced against `PDF_PARSE_TIMEOUT_MS`; **always** `await parser.destroy()` in `finally` **(verified API; `getText` returns `{ pages, text, total }`)**.
@@ -503,9 +544,9 @@ Scale note: at a few thousand rows the planner may ignore HNSW when filters are 
 
 ### 8.9 `schemas.js`, `normalize.js`
 
-LLM output schemas (Zod) — **rules (verified against the installed LangChain):**
-- Every field required; "optional" ⇒ `.nullable()` (OpenAI strict mode requires all keys; `z.optional()` is not respected, and nullable becomes `anyOf [type, null]`).
-- No `.default()`, no `.min()/.max()/.length()/.int()` constraints (they emit JSON-schema keywords strict mode may reject). Clamp/round/dedupe **in code** (`normalize.js`).
+LLM output schemas (Zod) — **rules (verified against the installed LangChain: `withStructuredOutput(..., { method: 'jsonSchema' })` sends them as Gemini `responseJsonSchema`):**
+- Every field required; "optional" ⇒ `.nullable()` (the generated schema lists every key as `required` and nullable fields become `type: [..., 'null']` / `anyOf`).
+- No `.default()`, no `.min()/.max()/.length()/.int()` constraints — keep schemas simple. Clamp/round/dedupe **in code** (`normalize.js`).
 - Use `.describe()` on fields; use `z.enum` for closed sets.
 - Node names in LangGraph must differ from state keys (§13).
 
@@ -601,25 +642,27 @@ Exports `{ aiQueue, enqueueJobProcessing, enqueueResumeProcessing }`.
 
 ### 9.2 `queues/ai.worker.js`
 
-Exports the `Worker` or `null` when inactive. `new Worker('ai', processor, { connection: redis, concurrency: aiConfig.workerConcurrency, limiter: { max: 30, duration: 60000 } })`. Log lines prefixed `[AI Worker]`. Handle `SIGTERM`/`SIGINT` like the email worker (close, then `process.exit(0)`).
+Exports the `Worker` or `null` when inactive. `const worker = new Worker('ai', processor, { connection: redis, concurrency: aiConfig.workerConcurrency, limiter: { max: aiConfig.workerRatePerMinute, duration: 60000 } })`. Log lines prefixed `[AI Worker]`. Handle `SIGTERM`/`SIGINT` like the email worker (close, then `process.exit(0)`).
+
+**Quota handling (Gemini free tier).** Wrap the body of the processor in `try { … } catch (err) { if (isRateLimitError(err)) { await worker.rateLimit(Math.max(getRetryDelayMs(err) ?? 0, WORKER_RATE_LIMIT_PAUSE_MS)); throw Worker.RateLimitError(); } throw err; }`. This pauses the whole queue and re-queues the job **without consuming one of its 3 attempts** **(verified with BullMQ 5.81 + Redis: the job re-ran after the pause with `attemptsMade` still 0 and no `failed` event)**. The `worker` constant is referenced inside the processor closure (allowed). While the daily quota is exhausted the queue simply retries once per pause; no job is marked `FAILED` because of quota.
 
 **`process-job` `{ jobId, force }`:**
 1. Load the job with `include: { employer: { select: { name: true } } }`. Missing or `isDeleted` ⇒ return (skip).
-2. `doc = buildJobDocument(job, job.employer.name)`; `hash = sha256(doc + '|' + PROMPT_VERSION)`.
+2. `doc = buildJobDocument(job, job.employer.name)`; `hash = sha256([doc, PROMPT_VERSION, aiConfig.chatModel, aiConfig.embeddingModel].join('|'))` (so changing a prompt version or either model automatically regenerates insights and embeddings on the next backfill).
 3. Load the `JobInsight` row. **Skip** when `!force && row?.status === 'READY' && row.contentHash === hash && await hasJobEmbedding(jobId)`.
-4. `const [insights, vector] = await Promise.all([generateJobInsights(doc), embedDocument(doc)])`.
+4. `const [insights, vector] = await Promise.all([generateJobInsights(doc), embedDocument(doc, { title: job.title })])`.
 5. In one `prisma.$transaction(async (tx) => { … })`: `tx.jobInsight.upsert` (`summary`, `highlights`, `contentHash: hash`, `status: 'READY'`, `error: null`, `processedAt: new Date()`) then `setJobEmbedding(tx, jobId, vector)`.
 
 **`process-resume` `{ userId }`:**
 1. Load the `Resume`; none ⇒ skip.
-2. `profile = await extractResumeProfile(resume.text)`; `vector = await embedDocument(buildResumeEmbeddingText(profile, resume.text))`.
+2. `profile = await extractResumeProfile(resume.text)`; `vector = await embedQuery(buildResumeEmbeddingText(profile, resume.text), { cache: false })` (**query role**, §8.7).
 3. In a transaction: `tx.resume.updateMany({ where: { userId, textHash: resume.textHash }, data: { profile, status: 'READY', error: null, processedAt: new Date() } })`; if `count === 0` the user replaced the resume meanwhile ⇒ stop (stale). Otherwise `setResumeEmbedding(tx, userId, resume.textHash, vector)`.
 
 **Failure handling:** on the Worker `failed` event, if `job.attemptsMade >= (job.opts.attempts ?? 1)` (final failure): `process-job` ⇒ `prisma.jobInsight.updateMany({ where: { jobId }, data: { status: 'FAILED', error: truncate(err.message, 300) } })`; `process-resume` ⇒ `prisma.resume.updateMany({ where: { userId, status: 'PENDING' }, data: { status: 'FAILED', error: truncate(err.message, 300) } })`. The `error` column is internal and **never returned by the API**.
 
 ### 9.3 Server wiring
 
-`server.js` additionally `require('./src/queues/ai.worker')` after the email worker, and logs `AI worker started` / `AI features disabled (no OPENAI_API_KEY)` accordingly.
+`server.js` additionally `require('./src/queues/ai.worker')` after the email worker, and logs `AI worker started` / `AI features disabled (no GEMINI_API_KEY)` accordingly.
 
 ---
 
@@ -634,6 +677,8 @@ Exports the `Worker` or `null` when inactive. `new Worker('ai', processor, { con
 Required order on a route: `requireAiEnabled` → (`verifyAccessToken` → `requireRole`) → `aiRateLimit` → (`aiDailyBudget`) → `validateRequest` → controller. Limits are listed per route in §11.
 
 ### 10.2 Daily budget scope
+
+This cap counts **HTTP requests**, not Gemini calls: one search makes up to 2 calls, a cover letter 3–5, and the worker consumes quota as well. Set `AI_DAILY_REQUEST_CAP` comfortably below your free-tier requests-per-day (AI Studio → rate limits).
 
 Counted (they call the LLM synchronously): search, fit, cover-letter, resume-tips. Not counted: worker jobs, similar jobs, recommendations, insights reads.
 
@@ -757,7 +802,7 @@ No resume ⇒ `resumeStatus:'NONE'`; not READY ⇒ `ready:false`; both with `job
 | 409 | `RESUME_REQUIRED` | `Upload your resume to use this feature` |
 | 422 | unreadable PDF | see §8.7 |
 | 429 | rate limit | `Too many requests…` |
-| 502/503/504 | OpenAI problems, AI disabled, daily cap | see §8.4, §10 |
+| 502/503/504 | Gemini problems or quota (429 ⇒ 503), AI disabled, daily cap | see §8.4, §10 |
 
 ---
 
@@ -793,7 +838,7 @@ No resume ⇒ `resumeStatus:'NONE'`; not READY ⇒ `ready:false`; both with `job
 
 **Salary semantics:** all salaries are **annual INR integers** (the app displays ₹; seeded `salaryMin` is 300,000–1,500,000 and `salaryMax` up to 2,100,000). The parser converts `10 LPA`/`10 lakh` → `1000000`, `1 crore` → `10000000`, `50k per month` → `600000`.
 
-**Failure/fallback:** any OpenAI error ⇒ HTTP 502/503/504 (never a 500 with provider text). The frontend then offers one click to run the normal keyword search with the same text.
+**Failure/fallback:** any Gemini error, including a quota 429 ⇒ HTTP 502/503/504 (never a 500 with provider text). The frontend then offers one click to run the normal keyword search with the same text.
 
 **Not included:** no keyword/BM25 blending; ranking is purely vector similarity after hard filters (§20).
 
@@ -833,7 +878,7 @@ Chain `extractResumeProfile(resumeText, { signal })` (`chains/resumeProfile.chai
   roles: { title, company: string|null, years: number|null, highlights: string[] }[],
   education: { degree, institution: string|null, year: string|null }[], certifications: string[] }
 ```
-The embedding input is `buildResumeEmbeddingText(profile, resume.text)` (normalised profile + raw excerpt gives better job matching than raw resume text alone).
+The embedding input is `buildResumeEmbeddingText(profile, resume.text)` (normalised profile + raw excerpt gives better job matching than raw resume text alone), embedded in the **query role** (§8.7) because the resume vector is later used as the query against job vectors.
 
 #### 12.4.3 Recommended jobs (endpoint #6)
 
@@ -873,7 +918,7 @@ Both are served by **one LangGraph graph** (§13) run in one of two modes, behin
 
 ## 13. LangGraph — application assistant (`src/ai/graphs/applicationAssistant.graph.js`)
 
-Verified behaviours of the installed `@langchain/langgraph` (v1.x, CommonJS): `Annotation.Root` state, `addConditionalEdges` with an explicit destinations array, a bounded cycle, nodes receive `(state, config)` and `config.signal` propagates `AbortSignal.timeout(...)` into model calls (pass it on to every `invoke`). **Node names must not equal state keys** (LangGraph throws) — hence verb-style node names (`writeDraft`) versus noun state keys (`draft`).
+Verified behaviours of the installed `@langchain/langgraph` (v1.x, CommonJS): `Annotation.Root` state, `addConditionalEdges` with an explicit destinations array, a bounded cycle, nodes receive `(state, config)` and `config.signal` propagates `AbortSignal.timeout(...)` into model calls (pass it on through `callOptions(config?.signal)` on every invoke, §8.6). **Node names must not equal state keys** (LangGraph throws) — hence verb-style node names (`writeDraft`) versus noun state keys (`draft`).
 
 **State**
 
@@ -931,7 +976,7 @@ const graph = new StateGraph(State)
 
 **Node behaviour**
 - `analyzeMatch(state, config)`: `getFitAnalysis({ job, employerName, resume: { text: resumeText, textHash: resumeHash }, signal: config?.signal })` → `{ analysis }` (cached when possible).
-- `writeDraft`: writing model (`getWritingModel()`), prompt §14.5, `StringOutputParser` → `{ draft: cleanedText }`. Inputs: job document, resume (truncated), analysis (matched skills + strengths), candidate name, company, tone/length instructions, notes.
+- `writeDraft`: writing model (`getWritingModel()`), prompt §14.5, `getText(message)` (§8.6; **not** `StringOutputParser`) → `{ draft: cleanedText }`. Inputs: job document, resume (truncated), analysis (matched skills + strengths), candidate name, company, tone/length instructions, notes.
 - `reviewDraft`: (1) LLM fact-check chain (prompt §14.6, `CritiqueSchema`) with the draft, resume, notes; (2) **code checks** appended to `issues`: placeholder regex `/\[[^\]\n]{1,60}\]/`, markdown regex `/^\s*([#>*-]|\d+\.)\s|\*\*/m`, word count outside `[min*0.9, max*1.1]`, missing greeting (`/^\s*dear\b/i`); (3) `passed = unsupportedClaims.length === 0 && issues.length === 0` (computed in code, overriding the model's `passed`). → `{ critique }`.
 - `reviseDraft`: writing model, prompt §14.7 (draft + unsupported claims + issues) → `{ draft: cleanedText, revisions: state.revisions + 1 }`.
 - `suggestTips`: `getResumeTips(...)` (§14.8 prompt, schema `ResumeTipsSchema`, cache `ai:tips:…`) → `{ tips, tipsCached }`.
@@ -1237,7 +1282,7 @@ Changes to `pages/jobs/JobDetail.jsx` are **additions only** (existing markup/be
 - **PENDING:** spinner "Analyzing your resume…" (polling every 3 s).
 - **READY:** file name (link "View PDF" opening `fileUrl` in a new tab), word count, updated date (`date-fns` `format`), detected **headline**, **experience** (`~X years` when present), top 12 **skills** chips; buttons **Replace** (file input), **Delete** (`window.confirm`).
 - **FAILED:** red note "We couldn't analyze your resume." + **Try again** (reprocess) and **Replace**.
-- Always show the notice: "Your resume text is sent to OpenAI to power these features. Delete it any time." Upload errors (422/400) are shown via `toast.error(message)`.
+- Always show the notice: "Your resume text is sent to Google's Gemini API to power these features. On Google's free tier it may be used to improve Google products. Delete it any time." (Reword it once the project runs on the paid tier.) Upload errors (422/400) are shown via `toast.error(message)`.
 
 ### 15.7 Recommended page (F4a)
 
@@ -1293,13 +1338,13 @@ Anything not listed here must **not** be modified.
 
 **Authorization.** All resume endpoints act only on `req.user.userId`. Employers cannot read resumes through any AI endpoint. Regenerate checks job ownership. Recommendations exclude the applicant's own applications only (no cross-user data).
 
-**Privacy.** Resume text and job text are sent to OpenAI. Disclose it in the UI (§15.6). `LANGSMITH_TRACING` / `LANGCHAIN_TRACING_V2` must stay unset (otherwise prompts would be sent to LangSmith). Never log prompts, resume text, model output or the API key; logs contain ids, durations and error messages only. `DELETE /api/resumes/me` removes text, profile and embedding; the Cloudinary file is intentionally kept because applications reference it. `error` columns are internal.
+**Privacy — read this before real users upload resumes.** Resume text and job text are sent to the Gemini API. On the **free tier Google may use prompts and responses to improve its products** (including human review); the paid tier does not. Therefore: (1) use only **fictional resumes** while developing and testing; (2) **enable billing (paid tier) before real people upload resumes**; (3) disclose the processing in the UI (§15.6) and keep the wording accurate for the tier in use. `LANGSMITH_TRACING` / `LANGCHAIN_TRACING_V2` must stay unset (otherwise prompts would be sent to LangSmith). Never log prompts, resume text, model output or the API key; logs contain ids, durations and error messages only. `DELETE /api/resumes/me` removes text, profile and embedding; the Cloudinary file is intentionally kept because applications reference it. `error` columns are internal.
 
 **Fairness.** Fit and tips prompts instruct the model to ignore personal attributes; the profile extractor is told not to output them. Fit results are advisory and shown only to the applicant.
 
-**Abuse & cost.** Per-endpoint Redis rate limits (§11.2), a global daily cap on LLM-invoking requests (`AI_DAILY_REQUEST_CAP`), input length caps (§8.2), result caching (§8.5), a small model with low reasoning effort, hash-based idempotent workers, BullMQ limiter (30 jobs/min). Public endpoints (search) are IP-limited — set `TRUST_PROXY` behind a proxy or all guests share one bucket.
+**Abuse & cost.** Per-endpoint Redis rate limits (§11.2), a global daily cap on LLM-invoking requests (`AI_DAILY_REQUEST_CAP`), input length caps (§8.2), result caching (§8.5), a small model with a low thinking level, hash-based idempotent workers, a BullMQ limiter (`AI_WORKER_RATE_PER_MINUTE`) plus queue-wide pausing on 429. Public endpoints (search) are IP-limited — set `TRUST_PROXY` behind a proxy or all guests share one bucket.
 
-**Rough cost (order of magnitude — confirm in the OpenAI usage dashboard):** `gpt-6-luna` ≈ $0.10 / 1M input and $0.50 / 1M output tokens (reasoning tokens count as output). One job insights call ≈ $0.0005–0.001; backfilling the ~170 seeded jobs ≈ $0.1–0.2; one fit analysis ≈ $0.002; one cover letter (3–5 calls) ≈ $0.01; embeddings ≈ $0.02 / 1M tokens (negligible).
+**Cost and quota.** The Gemini free tier is free of charge but quota-limited (§4.2): per-minute and per-day request limits per model, shown in AI Studio. Rough consumption: one job = 1 chat call + 1 embedding call; backfilling ~170 jobs ≈ 340 calls spread over time by the limiter; an uncached search ≈ 2 calls; a fit analysis 1 call; a cover letter 3–5 calls. If you later move to the paid tier, current prices are listed at <https://ai.google.dev/gemini-api/docs/pricing>.
 
 ---
 
@@ -1307,22 +1352,22 @@ Anything not listed here must **not** be modified.
 
 ### 18.1 `scripts/ai-smoke.js` (`npm run ai:smoke [-- --full]`)
 
-Requires a real `OPENAI_API_KEY`. Loads config, exits `1` with a clear message if AI is not active. Runs these checks sequentially, printing `PASS`/`FAIL` + duration for each, exits non-zero if any fails:
-1. embeddings: `embedQuery('hello')` returns 1536 finite numbers;
+Requires a real `GEMINI_API_KEY`. Loads config, exits `1` with a clear message if AI is not active. Runs these checks sequentially, printing `PASS`/`FAIL` + duration for each, exits non-zero if any fails:
+1. embeddings: `embedQuery('hello', { cache: false })` and `embedDocument('a job text', { title: 'Engineer' })` each return 1536 finite numbers of unit length (±0.01), and the two vectors are not identical;
 2. `parseSearchQuery('remote react developer 10+ LPA')` ⇒ `locationType === 'REMOTE'` and `salaryMin === 1000000`;
 3. `generateJobInsights(<sample job document>)` ⇒ non-empty summary, valid `experienceLevel`;
 4. `extractResumeProfile(<sample resume text>)` ⇒ `skills.length > 0`;
 5. `analyzeFit(<sample job>, <sample resume>)` ⇒ score 0–100 and a verdict;
 6. with `--full`: `runApplicationAssistant` in both modes (cover letter: non-empty, no `[`…`]` placeholders; tips: ≥ 1 tip).
-Sample data is inline in the script (a fictional job and resume — no real personal data). This script is the guard against OpenAI strict-schema/parameter rejections that cannot be detected offline.
+Sample data is inline in the script (a fictional job and resume — no real personal data). This script is the guard against Gemini schema/parameter/response-shape problems that cannot be detected offline (e.g. a JSON-schema keyword rejected by `responseJsonSchema`, a changed `embedContent` response shape, an unavailable model on your free tier).
 
 ### 18.2 `scripts/ai-backfill.js` (`npm run ai:backfill [-- --force] [-- --limit N]`)
 
-Standalone script (loads `dotenv`, Prisma, queue). For **active** jobs (`isDeleted = false` and deadline null/in the future): call `enqueueJobProcessing(jobId, { force })` (which also creates the `PENDING` `JobInsight` row) for jobs whose `JobInsight` is missing or not `READY`, or for all of them with `--force`. Also call `enqueueResumeProcessing(userId)` for resumes not `READY` (with `--force`, all resumes). Prints counts, then closes the queue, Redis and Prisma and exits. **Processing happens in the running API process** (its worker consumes the queue), so the server must be running; at 30 jobs/min, ~170 jobs take ≈ 6 minutes. Exits with a message when AI is inactive.
+Standalone script (loads `dotenv`, Prisma, queue). For **active** jobs (`isDeleted = false` and deadline null/in the future): call `enqueueJobProcessing(jobId, { force })` (which also creates the `PENDING` `JobInsight` row) for jobs whose `JobInsight` is missing or not `READY`, or for all of them with `--force`. Also call `enqueueResumeProcessing(userId)` for resumes not `READY` (with `--force`, all resumes). Prints counts, then closes the queue, Redis and Prisma and exits. **Processing happens in the running API process** (its worker consumes the queue), so the server must be running; at the default `AI_WORKER_RATE_PER_MINUTE=6`, ~170 jobs take ≈ 30 minutes (and the queue pauses by itself if Gemini returns 429 — leave the server running). Exits with a message when AI is inactive.
 
 ### 18.3 Unit tests (`backend/test/ai/*.test.js`, `node:test` + `node:assert/strict`, no network/DB)
 
-`text.test.js` (cleanText, stripPdfPageMarkers incl. the real marker format, escapeLike, truncate, wordCount, buildJobDocument incl. salary variants, buildResumeEmbeddingText), `vector.test.js` (literal format, wrong length, NaN), `normalize.test.js` (list dedupe/clamp, search-query fallback, `remote` location nulling, salary swap/rounding, `scoreToVerdict` boundaries 34/35/54/55/74/75, fit/tips/profile/insights normalisers with malformed input), `config.test.js` (`buildConfig` active/inactive combinations, empty reasoning effort, invalid number), `errors.test.js` (`toApiError` mapping table). `config.js` therefore exports **both** `aiConfig` and a pure `buildConfig(env)`.
+`text.test.js` (cleanText, stripPdfPageMarkers incl. the real marker format, escapeLike, truncate, wordCount, buildJobDocument incl. salary variants, buildResumeEmbeddingText), `vector.test.js` (literal format, wrong length, NaN, `l2Normalize` incl. zero vector), `formatEmbeddingInput` cases inside `text.test.js` (v2 document with and without title, v2 query, 001 task types), `normalize.test.js` (list dedupe/clamp, search-query fallback, `remote` location nulling, salary swap/rounding, `scoreToVerdict` boundaries 34/35/54/55/74/75, fit/tips/profile/insights normalisers with malformed input), `config.test.js` (`buildConfig` active/inactive combinations, `GOOGLE_API_KEY` fallback, absent vs empty `GEMINI_THINKING_LEVEL`, invalid embedding model, invalid number), `errors.test.js` (`toApiError` mapping table incl. `statusCode` vs `status`, `PromptBlockedError`, `isRateLimitError`, `getRetryDelayMs` for a `Retry-After` header and a `RetryInfo` detail). `config.js` therefore exports **both** `aiConfig` and a pure `buildConfig(env)`.
 
 ### 18.4 Regression expectations
 
@@ -1333,11 +1378,11 @@ With AI inactive (no key) **every existing flow behaves exactly as before**: aut
 ## 19. Operations
 
 - **Docker:** `docker compose pull postgres && docker compose up -d postgres` after changing the image. Verify: `docker exec job-board-postgres psql -U jobboard -d jobboard -c "SELECT name FROM pg_available_extensions WHERE name='vector';"` returns one row. `CREATE EXTENSION` needs superuser — the official image's `POSTGRES_USER` is a superuser, so the migration works unchanged.
-- **Deploy order:** (1) swap the Postgres image, (2) `npx prisma migrate deploy`, (3) set `OPENAI_API_KEY` etc., (4) deploy backend + frontend, (5) `npm run ai:backfill`.
+- **Deploy order:** (1) swap the Postgres image, (2) `npx prisma migrate deploy`, (3) set `GEMINI_API_KEY` etc., (4) deploy backend + frontend, (5) `npm run ai:backfill`.
 - **Reverse proxy:** `location /api/ai/ { proxy_read_timeout 120s; }` (cover letters can take > 60 s); set `TRUST_PROXY=1` when exactly one proxy sits in front of the API.
-- **Changing the embedding model:** vectors from different models are not comparable — after changing `OPENAI_EMBEDDING_MODEL` run `npm run ai:backfill -- --force` and ask applicants to re-upload (or call reprocess; resume embeddings are rebuilt by `process-resume`). Changing the dimension (1536) requires a migration of both `vector(1536)` columns and the HNSW index.
-- **Changing prompts:** bump `PROMPT_VERSION`; caches key on it and the next backfill regenerates insights.
-- **Changing `OPENAI_CHAT_MODEL`:** the content hash does not include the model name, so existing summaries are kept; run `npm run ai:backfill -- --force` to regenerate them with the new model.
+- **Changing the embedding model:** vectors from different models are not comparable. The content hash includes the chat and embedding model names (§9.2), so after changing `GEMINI_EMBEDDING_MODEL` simply run `npm run ai:backfill` (jobs are re-embedded automatically) and have applicants re-upload or press "Try again" (resume vectors are rebuilt by `process-resume`). Changing the dimension (1536) requires a migration of both `vector(1536)` columns and the HNSW index.
+- **Changing prompts or `GEMINI_CHAT_MODEL`:** bump `PROMPT_VERSION` for prompt changes; caches are keyed on it and on the chat model, and the next `npm run ai:backfill` regenerates insights.
+- **Quota exhausted:** nothing breaks — HTTP AI endpoints answer 503 (the UI falls back to keyword search), the worker pauses and resumes by itself. Check your limits at <https://aistudio.google.com/rate-limit>; enabling billing lifts the free-tier limits **and** stops Google from using your data to improve its products.
 - **Re-running the seed script:** it wipes users/jobs (cascading to `JobInsight`/`Resume`); run `npm run ai:backfill` afterwards.
 - **Turning AI off:** set `AI_ENABLED=false` (or remove the key) and restart. Stored data is kept.
 - **Node:** ≥ 22.3 on every environment (local, CI, Docker image, VPS) — check the backend's Dockerfile/base image (`node:22-…`) before deploying.
@@ -1353,4 +1398,4 @@ Observed while reading the code; **do not fix as part of this work** (mention th
 4. Zod 4 ignores the `errorMap` option used in the enum schemas (custom enum messages are not shown).
 5. `applyToJob` crashed with a 500 when no file was uploaded (fixed here only as part of the saved-resume touchpoint).
 
-Future work (not planned): streaming cover letters (SSE), keyword + vector hybrid ranking (reciprocal rank fusion), pgvector iterative scans at scale, employer-side candidate ranking, multiple resumes, DOCX support, evaluation set + LangSmith (with consent), moving workers to their own process, localisation.
+Future work (not planned): moving to the paid tier once real users arrive (§17); streaming cover letters (SSE), keyword + vector hybrid ranking (reciprocal rank fusion), pgvector iterative scans at scale, employer-side candidate ranking, multiple resumes, DOCX support, evaluation set + LangSmith (with consent), moving workers to their own process, localisation.
