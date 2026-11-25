@@ -1,6 +1,6 @@
 const ApiResponse = require('../../utils/ApiResponse');
 const asyncHandler = require('../../utils/asyncHandler');
-const { getAiStatus, getJobInsights, regenerateJobInsights, getSimilarJobs } = require('./ai.service');
+const { getAiStatus, getJobInsights, regenerateJobInsights, getSimilarJobs, searchJobs } = require('./ai.service');
 
 const handleGetStatus = asyncHandler(async (req, res) => {
   const status = await getAiStatus();
@@ -34,9 +34,18 @@ const handleGetSimilarJobs = asyncHandler(async (req, res) => {
   );
 });
 
+const handleSearchJobs = asyncHandler(async (req, res) => {
+  const result = await searchJobs(req.validated.query);
+
+  res.status(200).json(
+    new ApiResponse(200, result, 'Search results retrieved')
+  );
+});
+
 module.exports = {
   getStatus: handleGetStatus,
   getJobInsights: handleGetJobInsights,
   regenerateJobInsights: handleRegenerateJobInsights,
-  getSimilarJobs: handleGetSimilarJobs
+  getSimilarJobs: handleGetSimilarJobs,
+  searchJobs: handleSearchJobs
 };

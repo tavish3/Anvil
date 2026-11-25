@@ -1,6 +1,7 @@
 const { Prisma } = require('@prisma/client');
 const prisma = require('../config/db');
 const { toVectorLiteral } = require('./vector');
+const { escapeLike } = require('./text');
 
 // All raw SQL for the AI tables lives here (AI spec §8.8). Vectors go through
 // toVectorLiteral and are cast with ::vector; `db` may be the prisma client or a transaction client.
@@ -63,6 +64,47 @@ async function findSimilarJobs({ vecText, excludeJobId, limit }) {
   `);
 }
 
+// Semantic search (AI spec §8.8 / §12.2): hard filters + cosine ranking over stored embeddings.
+async function searchJobs({ vec, filters = {}, minScore = 0, page = 1, limit = 10 }) {
+  const lit = toVectorLiteral(vec);
+  const dist = Prisma.sql`ji."embedding" <=> ${lit}::vector`;
+
+  const conds = [
+    ACTIVE_JOB,
+    Prisma.sql`(1 - (${dist})) >= ${minScore}`,
+  ];
+
+  const { locationType, jobType, location, salaryMin, salaryMax } = filters;
+  if (locationType) conds.push(Prisma.sql`j."locationType" = ${locationType}::"LocationType"`);
+  if (jobType) conds.push(Prisma.sql`j."jobType" = ${jobType}::"JobType"`);
+  if (location) conds.push(Prisma.sql`j."location" ILIKE ${'%' + escapeLike(location) + '%'}`);
+  if (salaryMin != null) conds.push(Prisma.sql`j."salaryMax" >= ${salaryMin}`);
+  if (salaryMax != null) conds.push(Prisma.sql`j."salaryMin" <= ${salaryMax}`);
+
+  const where = Prisma.join(conds, ' AND ');
+
+  const [rows, countRows] = await Promise.all([
+    prisma.$queryRaw(Prisma.sql`
+      SELECT ${LIST_COLUMNS},
+             1 - (${dist}) AS "score"
+      FROM "JobInsight" ji
+      JOIN "Job" j ON j."id" = ji."jobId"
+      JOIN "User" u ON u."id" = j."employerId"
+      WHERE ${where}
+      ORDER BY ${dist} ASC
+      LIMIT ${limit} OFFSET ${(page - 1) * limit}
+    `),
+    prisma.$queryRaw(Prisma.sql`
+      SELECT COUNT(*)::int AS "total"
+      FROM "JobInsight" ji
+      JOIN "Job" j ON j."id" = ji."jobId"
+      WHERE ${where}
+    `),
+  ]);
+
+  return { rows, total: countRows[0]?.total ?? 0 };
+}
+
 module.exports = {
   hasJobEmbedding,
   setJobEmbedding,
@@ -70,4 +112,5 @@ module.exports = {
   clearResumeEmbedding,
   getJobEmbeddingText,
   findSimilarJobs,
+  searchJobs,
 };
