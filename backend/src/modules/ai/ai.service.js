@@ -4,10 +4,17 @@ const { aiConfig } = require('../../ai/config');
 const { SYNC_REQUEST_TIMEOUT_MS } = require('../../ai/constants');
 const { runAi } = require('../../ai/errors');
 const { parseSearchQuery } = require('../../ai/chains/searchParser.chain');
+const { getFitAnalysis } = require('../../ai/chains/fitAnalysis.chain');
 const { embedQuery } = require('../../ai/embeddings');
 const { enqueueJobProcessing } = require('../../queues/ai.queue');
-const { getJobEmbeddingText, findSimilarJobs, searchJobs: searchJobsRepo } = require('../../ai/repository');
-const { mapJobRow } = require('./ai.mapper');
+const {
+  getJobEmbeddingText,
+  getResumeEmbeddingText,
+  findSimilarJobs,
+  findRecommendations,
+  searchJobs: searchJobsRepo
+} = require('../../ai/repository');
+const { mapJobRow, totalPages } = require('./ai.mapper');
 
 const getAiStatus = async () => ({ enabled: aiConfig.active });
 
@@ -94,8 +101,75 @@ const searchJobs = async ({ q, page, limit }) => {
     jobs: rows.map(mapJobRow),
     total,
     page,
-    totalPages: Math.ceil(total / limit)
+    totalPages: totalPages(total, limit)
   };
+};
+
+// Endpoint #6 (§11.3 / §12.4.3): ranked active jobs by resume-embedding similarity.
+// Jobs the applicant already applied to are excluded. Ranking only — no percentage.
+const getRecommendations = async (userId, { page, limit }) => {
+  const empty = (resumeStatus) => ({
+    resumeStatus,
+    ready: false,
+    jobs: [],
+    total: 0,
+    page,
+    totalPages: 0
+  });
+
+  const resume = await prisma.resume.findUnique({
+    where: { userId },
+    select: { status: true }
+  });
+  if (!resume) {
+    return empty('NONE');
+  }
+  if (resume.status !== 'READY') {
+    return empty(resume.status);
+  }
+
+  const vecText = await getResumeEmbeddingText(userId);
+  if (!vecText) {
+    return empty(resume.status);
+  }
+
+  const { rows, total } = await findRecommendations({ vecText, userId, page, limit });
+  return {
+    resumeStatus: resume.status,
+    ready: true,
+    jobs: rows.map(mapJobRow),
+    total,
+    page,
+    totalPages: totalPages(total, limit)
+  };
+};
+
+// Endpoint #7 (§11.3 / §12.4.4): per-job fit analysis. Works as soon as the resume
+// text is stored — it does not wait for the async profile/embedding to be READY.
+const analyzeFitForUser = async (userId, jobId) => {
+  const job = await prisma.job.findFirst({
+    where: { id: jobId, isDeleted: false },
+    include: { employer: { select: { name: true } } }
+  });
+  if (!job) {
+    throw new ApiError(404, 'Job not found');
+  }
+
+  const resume = await prisma.resume.findUnique({
+    where: { userId },
+    select: { text: true, textHash: true }
+  });
+  if (!resume) {
+    throw new ApiError(409, 'Upload your resume to use this feature', [{ code: 'RESUME_REQUIRED' }]);
+  }
+
+  const signal = AbortSignal.timeout(SYNC_REQUEST_TIMEOUT_MS);
+  return runAi(() => getFitAnalysis({
+    job,
+    employerName: job.employer.name,
+    resume: { text: resume.text, textHash: resume.textHash },
+    signal
+  }));
 };
 
 module.exports = {
@@ -103,5 +177,7 @@ module.exports = {
   getJobInsights,
   regenerateJobInsights,
   getSimilarJobs,
-  searchJobs
+  searchJobs,
+  getRecommendations,
+  analyzeFitForUser
 };

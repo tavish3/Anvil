@@ -33,6 +33,13 @@ async function clearResumeEmbedding(db, userId) {
   );
 }
 
+async function getResumeEmbeddingText(userId) {
+  const rows = await prisma.$queryRaw(
+    Prisma.sql`SELECT "embedding"::text AS "e" FROM "Resume" WHERE "userId" = ${userId}`
+  );
+  return rows[0]?.e ?? null;
+}
+
 // `embedding::text` yields a '[...]' vector literal that can be cast back with ::vector.
 async function getJobEmbeddingText(jobId) {
   const rows = await prisma.$queryRaw(
@@ -105,12 +112,47 @@ async function searchJobs({ vec, filters = {}, minScore = 0, page = 1, limit = 1
   return { rows, total: countRows[0]?.total ?? 0 };
 }
 
+// Recommended jobs (AI spec §8.8 / §12.4.3): active jobs ranked by resume-embedding
+// similarity, excluding jobs the applicant already applied to.
+async function findRecommendations({ vecText, userId, page = 1, limit = 10 }) {
+  const dist = Prisma.sql`ji."embedding" <=> ${vecText}::vector`;
+  const where = Prisma.sql`
+    ${ACTIVE_JOB}
+    AND NOT EXISTS (
+      SELECT 1 FROM "Application" a
+      WHERE a."jobId" = j."id" AND a."applicantId" = ${userId}
+    )`;
+
+  const [rows, countRows] = await Promise.all([
+    prisma.$queryRaw(Prisma.sql`
+      SELECT ${LIST_COLUMNS},
+             1 - (${dist}) AS "score"
+      FROM "JobInsight" ji
+      JOIN "Job" j ON j."id" = ji."jobId"
+      JOIN "User" u ON u."id" = j."employerId"
+      WHERE ${where}
+      ORDER BY ${dist} ASC
+      LIMIT ${limit} OFFSET ${(page - 1) * limit}
+    `),
+    prisma.$queryRaw(Prisma.sql`
+      SELECT COUNT(*)::int AS "total"
+      FROM "JobInsight" ji
+      JOIN "Job" j ON j."id" = ji."jobId"
+      WHERE ${where}
+    `),
+  ]);
+
+  return { rows, total: countRows[0]?.total ?? 0 };
+}
+
 module.exports = {
   hasJobEmbedding,
   setJobEmbedding,
   setResumeEmbedding,
   clearResumeEmbedding,
+  getResumeEmbeddingText,
   getJobEmbeddingText,
   findSimilarJobs,
   searchJobs,
+  findRecommendations,
 };

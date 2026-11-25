@@ -1,6 +1,6 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { mapJobRow } = require('../../src/modules/ai/ai.mapper');
+const { mapJobRow, totalPages } = require('../../src/modules/ai/ai.mapper');
 
 const baseRow = {
   id: 'job-1',
@@ -51,4 +51,12 @@ test('mapJobRow handles null salary, deadline, avatar and missing score', () => 
   assert.equal(card.deadline, null);
   assert.equal(card.employer.avatarUrl, null);
   assert.equal(card.score, 0);
+});
+
+test('totalPages rounds up and returns 0 for empty results', () => {
+  assert.equal(totalPages(0, 10), 0);
+  assert.equal(totalPages(1, 10), 1);
+  assert.equal(totalPages(10, 10), 1);
+  assert.equal(totalPages(11, 10), 2);
+  assert.equal(totalPages(40, 10), 4);
 });

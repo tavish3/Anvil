@@ -1,6 +1,6 @@
 const ApiResponse = require('../../utils/ApiResponse');
 const asyncHandler = require('../../utils/asyncHandler');
-const { getAiStatus, getJobInsights, regenerateJobInsights, getSimilarJobs, searchJobs } = require('./ai.service');
+const { getAiStatus, getJobInsights, regenerateJobInsights, getSimilarJobs, searchJobs, getRecommendations, analyzeFitForUser } = require('./ai.service');
 
 const handleGetStatus = asyncHandler(async (req, res) => {
   const status = await getAiStatus();
@@ -42,10 +42,28 @@ const handleSearchJobs = asyncHandler(async (req, res) => {
   );
 });
 
+const handleGetRecommendations = asyncHandler(async (req, res) => {
+  const result = await getRecommendations(req.user.userId, req.validated.query);
+
+  res.status(200).json(
+    new ApiResponse(200, result, 'Recommendations retrieved')
+  );
+});
+
+const handleAnalyzeFit = asyncHandler(async (req, res) => {
+  const result = await analyzeFitForUser(req.user.userId, req.params.id);
+
+  res.status(200).json(
+    new ApiResponse(200, result, 'Fit analysis retrieved')
+  );
+});
+
 module.exports = {
   getStatus: handleGetStatus,
   getJobInsights: handleGetJobInsights,
   regenerateJobInsights: handleRegenerateJobInsights,
   getSimilarJobs: handleGetSimilarJobs,
-  searchJobs: handleSearchJobs
+  searchJobs: handleSearchJobs,
+  getRecommendations: handleGetRecommendations,
+  analyzeFit: handleAnalyzeFit
 };

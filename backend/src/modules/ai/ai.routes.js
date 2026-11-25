@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
-const { getStatus, getJobInsights, regenerateJobInsights, getSimilarJobs, searchJobs } = require('./ai.controller');
-const { similarQuerySchema, searchQuerySchema } = require('./ai.schema');
+const { getStatus, getJobInsights, regenerateJobInsights, getSimilarJobs, searchJobs, getRecommendations, analyzeFit } = require('./ai.controller');
+const { similarQuerySchema, searchQuerySchema, recommendationsQuerySchema } = require('./ai.schema');
 const validateRequest = require('../../middlewares/validateRequest');
 const verifyAccessToken = require('../../middlewares/auth');
 const requireRole = require('../../middlewares/requireRole');
@@ -13,5 +13,7 @@ router.get('/jobs/:id/insights', requireAiEnabled, aiRateLimit({ name: 'insights
 router.post('/jobs/:id/insights/regenerate', requireAiEnabled, verifyAccessToken, requireRole('EMPLOYER'), aiRateLimit({ name: 'regenerate', limit: 5 }), regenerateJobInsights);
 router.get('/jobs/:id/similar', requireAiEnabled, aiRateLimit({ name: 'similar', limit: 60 }), validateRequest(similarQuerySchema, 'query'), getSimilarJobs);
 router.get('/search', requireAiEnabled, aiRateLimit({ name: 'search', limit: 20 }), aiDailyBudget, validateRequest(searchQuerySchema, 'query'), searchJobs);
+router.get('/recommendations', requireAiEnabled, verifyAccessToken, requireRole('APPLICANT'), aiRateLimit({ name: 'recommendations', limit: 30 }), validateRequest(recommendationsQuerySchema, 'query'), getRecommendations);
+router.post('/jobs/:id/fit', requireAiEnabled, verifyAccessToken, requireRole('APPLICANT'), aiRateLimit({ name: 'fit', limit: 10 }), aiDailyBudget, analyzeFit);
 
 module.exports = router;

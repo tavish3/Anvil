@@ -17,4 +17,6 @@ const mapJobRow = (row) => ({
   score: Math.round((row.score ?? 0) * 10000) / 10000
 });
 
-module.exports = { mapJobRow };
+const totalPages = (total, limit) => Math.ceil(total / limit);
+
+module.exports = { mapJobRow, totalPages };
