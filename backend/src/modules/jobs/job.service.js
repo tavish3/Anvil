@@ -1,5 +1,6 @@
 const prisma = require('../../config/db');
 const ApiError = require('../../utils/ApiError');
+const { enqueueJobProcessing } = require('../../queues/ai.queue');
 
 const createJob = async (employerId, data) => {
   const job = await prisma.job.create({
@@ -8,6 +9,8 @@ const createJob = async (employerId, data) => {
       ...data
     }
   });
+
+  await enqueueJobProcessing(job.id);
 
   return job;
 };
@@ -29,6 +32,8 @@ const updateJob = async (jobId, employerId, data) => {
     where: { id: jobId },
     data
   });
+
+  await enqueueJobProcessing(updatedJob.id);
 
   return updatedJob;
 };
