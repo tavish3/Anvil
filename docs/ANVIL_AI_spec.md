@@ -1227,6 +1227,8 @@ Same pattern as `src/api/jobs.js` (`axiosInstance`, return `response.data.data`)
 
 All queries that require login pass `enabled: !!accessToken` (from `useAuthStore`) in addition to feature gating, so **no AI request fires for guests** (except `status`, `insights`, `search`, `similar`, which are public).
 
+> **Implementation note (as built in AI-10):** for hooks taking an `enabled` option (`useJobInsights`, `useSimilarJobs`, `useAiSearch`, `useRecommendations`, `useMyResume`), an omitted/`undefined` option means *enabled* — only an explicit `false` disables the query (combined with the `jobId`/`accessToken`/`params?.q` guards). Callers should always pass the AI-enabled flag explicitly; a missing flag with AI off produces at most one 503 (`requireAiEnabled`), never a retry loop. `useAiSearch` additionally requires `params?.q` to be non-empty before firing.
+
 ### 15.4 Jobs page → "Keyword | AI search" tabs (F2)
 
 1. **Move** the full current content of `pages/jobs/Jobs.jsx` unchanged into `pages/jobs/KeywordJobs.jsx`; only rename the default export to `KeywordJobs`.
