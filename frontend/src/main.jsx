@@ -17,6 +17,7 @@ import JobDetail from './pages/jobs/JobDetail'
 
 // Applicant pages
 import MyApplications from './pages/applicant/MyApplications'
+import Recommended from './pages/applicant/Recommended'
 
 // Employer pages
 import MyListings from './pages/employer/MyListings'
@@ -69,6 +70,11 @@ createRoot(document.getElementById('root')).render(
             } />
             
             {/* Applicant routes */}
+            <Route path="/recommended" element={
+              <RoleRoute allowedRole="APPLICANT">
+                <Recommended />
+              </RoleRoute>
+            } />
             <Route path="/my-applications" element={
               <RoleRoute allowedRole="APPLICANT">
                 <MyApplications />

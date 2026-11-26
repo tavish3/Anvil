@@ -5,7 +5,7 @@ const { applyToJob, withdrawApplication, getMyApplications, getJobApplicants, up
 const handleApplyToJob = asyncHandler(async (req, res) => {
   const { jobId } = req.params;
   const applicantId = req.user.userId;
-  const { coverLetter } = req.body;
+  const { coverLetter } = req.body || {};
   const resumeBuffer = req.file ? req.file.buffer : undefined;
   const useSavedResume = req.body?.useSavedResume === 'true';
 

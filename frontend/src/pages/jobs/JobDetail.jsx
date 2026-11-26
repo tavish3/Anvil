@@ -1,7 +1,10 @@
 import { useState } from 'react';
 import { useParams, Link, useLocation } from 'react-router-dom';
+import { useQueryClient } from '@tanstack/react-query';
 import { useJob } from '../../hooks/useJobs';
 import { useApplyToJob } from '../../hooks/useApplications';
+import { useAiStatus } from '../../hooks/useAi';
+import { useMyResume } from '../../hooks/useResume';
 import useAuthStore from '../../store/authStore';
 import JobAiSummary from '../../components/ai/JobAiSummary';
 import SimilarJobs from '../../components/ai/SimilarJobs';
@@ -37,13 +40,17 @@ export default function JobDetail() {
   const handleApply = (e) => {
     e.preventDefault();
 
-    if (!formData.resume) {
+    if (!usingSaved && !formData.resume) {
       toast.error('Please upload your resume (PDF)');
       return;
     }
 
     const formDataToSend = new FormData();
-    formDataToSend.append('resume', formData.resume);
+    if (usingSaved) {
+      formDataToSend.append('useSavedResume', 'true');
+    } else {
+      formDataToSend.append('resume', formData.resume);
+    }
     if (formData.coverLetter) {
       formDataToSend.append('coverLetter', formData.coverLetter);
     }
@@ -55,6 +62,8 @@ export default function JobDetail() {
           toast.success('Application submitted successfully!');
           setShowApplyModal(false);
           setFormData({ resume: null, coverLetter: '' });
+          setUseSaved(true);
+          queryClient.invalidateQueries({ queryKey: ['ai', 'recommendations'] });
         },
         onError: (err) => {
           toast.error(err.response?.data?.message || 'Failed to apply');
@@ -65,6 +74,13 @@ export default function JobDetail() {
 
   const isApplicant = user?.role === 'APPLICANT';
   const isDeadlinePassed = data?.deadline && new Date(data.deadline) < new Date();
+
+  const queryClient = useQueryClient();
+  const { data: aiStatus } = useAiStatus();
+  const aiEnabled = aiStatus?.enabled === true;
+  const { data: savedResume } = useMyResume({ enabled: aiEnabled && isApplicant });
+  const [useSaved, setUseSaved] = useState(true);
+  const usingSaved = aiEnabled && isApplicant && !!savedResume && useSaved;
 
   if (isLoading) {
     return (
@@ -203,7 +219,7 @@ export default function JobDetail() {
         {/* Apply Modal */}
         {showApplyModal && (
           <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
-            <div className="bg-white rounded-lg p-6 max-w-md w-full">
+            <div className="bg-white rounded-lg p-6 max-w-md w-full max-h-[90vh] overflow-y-auto">
               <div className="flex justify-between items-center mb-4">
                 <h2 className="text-xl font-semibold text-gray-900">Apply for {job.title}</h2>
                 <button
@@ -216,18 +232,48 @@ export default function JobDetail() {
 
 
               <form onSubmit={handleApply}>
-                <div className="mb-4">
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Resume (PDF)*
-                  </label>
-                  <input
-                    type="file"
-                    accept=".pdf"
-                    onChange={handleFileChange}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-indigo-500 focus:border-indigo-500"
-                    required
-                  />
-                </div>
+                {aiEnabled && isApplicant && savedResume && (
+                  <div className="mb-4">
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Resume
+                    </label>
+                    <div className="space-y-2">
+                      <label className="flex items-center gap-2 text-sm text-gray-700">
+                        <input
+                          type="radio"
+                          name="resume-choice"
+                          checked={useSaved}
+                          onChange={() => setUseSaved(true)}
+                        />
+                        Use my saved resume ({savedResume.fileName})
+                      </label>
+                      <label className="flex items-center gap-2 text-sm text-gray-700">
+                        <input
+                          type="radio"
+                          name="resume-choice"
+                          checked={!useSaved}
+                          onChange={() => setUseSaved(false)}
+                        />
+                        Upload a different PDF
+                      </label>
+                    </div>
+                  </div>
+                )}
+
+                {!usingSaved && (
+                  <div className="mb-4">
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      Resume (PDF)*
+                    </label>
+                    <input
+                      type="file"
+                      accept=".pdf"
+                      onChange={handleFileChange}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-indigo-500 focus:border-indigo-500"
+                      required={!usingSaved}
+                    />
+                  </div>
+                )}
 
                 <div className="mb-4">
                   <label className="block text-sm font-medium text-gray-700 mb-1">

@@ -4,10 +4,13 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
 import { logout } from '../api/auth';
 import NotificationBell from './NotificationBell';
+import { useAiStatus } from '../hooks/useAi';
 import anvilLogo from '../assets/Anvil.webp';
 
 const Navbar = () => {
   const { user, accessToken, clearAuth } = useAuthStore();
+  const { data: aiStatus } = useAiStatus();
+  const aiEnabled = aiStatus?.enabled === true;
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const logoutMutation = useMutation({
@@ -45,12 +48,22 @@ const Navbar = () => {
               <>
                 {/* Role-specific links */}
                 {user?.role === 'APPLICANT' && (
-                  <Link
-                    to="/my-applications"
-                    className="text-gray-700 hover:text-blue-600 px-3 py-2 rounded-md text-sm font-medium transition"
-                  >
-                    My Applications
-                  </Link>
+                  <>
+                    {aiEnabled && (
+                      <Link
+                        to="/recommended"
+                        className="text-gray-700 hover:text-blue-600 px-3 py-2 rounded-md text-sm font-medium transition"
+                      >
+                        Recommended
+                      </Link>
+                    )}
+                    <Link
+                      to="/my-applications"
+                      className="text-gray-700 hover:text-blue-600 px-3 py-2 rounded-md text-sm font-medium transition"
+                    >
+                      My Applications
+                    </Link>
+                  </>
                 )}
                 
                 {user?.role === 'EMPLOYER' && (

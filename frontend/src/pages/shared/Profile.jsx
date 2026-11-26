@@ -3,9 +3,13 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
 import useAuthStore from '../../store/authStore';
 import { getMe, updateMe, updateAvatar } from '../../api/users';
+import { useAiStatus } from '../../hooks/useAi';
+import ResumeCard from '../../components/ai/ResumeCard';
 
 const Profile = () => {
   const { user } = useAuthStore();
+  const { data: aiStatus } = useAiStatus();
+  const aiEnabled = aiStatus?.enabled === true;
   const queryClient = useQueryClient();
   const [isEditingName, setIsEditingName] = useState(false);
   const [name, setName] = useState(user?.name || '');
@@ -238,6 +242,8 @@ const Profile = () => {
             </span>
           </div>
         </div>
+
+        {user?.role === 'APPLICANT' && aiEnabled && <ResumeCard />}
       </div>
     </div>
   );
