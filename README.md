@@ -38,11 +38,12 @@ A full-stack job board platform where **Employers** can post and manage job list
 
 | Layer | Technology |
 |-------|------------|
-| **Backend Runtime** | Node.js |
+| **Backend Runtime** | Node.js ≥ 22.3 |
 | **Backend Framework** | Express.js |
-| **Database** | PostgreSQL 15 |
+| **Database** | PostgreSQL 15 + pgvector |
 | **ORM** | Prisma |
 | **Cache / Queues** | Redis 7 + BullMQ |
+| **AI / LLM** | Google Gemini (chat + embeddings) via LangChain & LangGraph |
 | **File Storage** | Cloudinary |
 | **Email** | Nodemailer (SMTP) |
 | **Authentication** | JWT (access + refresh tokens) |
@@ -448,6 +449,115 @@ Anvil/
 ### Soft Delete
 - Jobs are soft-deleted (isDeleted flag) rather than hard-deleted
 - This preserves data integrity and allows for recovery
+
+---
+
+## AI features
+
+Optional AI features powered by **Google Gemini** (chat + embeddings) through LangChain and LangGraph. The whole feature set is **off by default-safe**: with no `GEMINI_API_KEY` the app boots and behaves exactly as before — `/api/ai/*` (except `/status`) and `/api/resumes/*` return `503`, and the UI hides every AI element.
+
+### What it does
+
+- **F1 — AI job summaries.** Every active job gets an async-generated summary (responsibilities, requirements, nice-to-haves, perks, experience level) stored in `JobInsight`. Shown on the job detail page; the owning employer can regenerate.
+- **F2 — AI semantic search.** The "AI search" tab on the Jobs page understands natural language ("remote react developer 10+ LPA"), extracts filters, embeds the semantic remainder and ranks jobs by pgvector cosine similarity.
+- **F3 — Similar jobs.** Up to 5 vector-similar jobs on every job detail page.
+- **F4 — Resumes, recommendations, fit.** Applicants upload one PDF resume (text extracted, profile + embedding built async). `/recommended` ranks jobs for them; "Check my fit" scores a job against the resume; both exclude already-applied jobs. Applying can reuse the saved resume.
+- **F5 — Cover letters & resume tips.** A LangGraph application assistant writes grounded cover letters (with a critique/revise loop, 3 tones) and job-specific resume tips with keywords to consider.
+
+### Architecture
+
+```
+                         ┌────────────────────────── React (Vite) ──────────────────────────┐
+                         │ Jobs (Keyword | AI search) · JobDetail (summary, similar, fit,    │
+                         │ tips, apply+cover letter) · Profile (resume) · /recommended      │
+                         └───────────────┬───────────────────────────────────────────────────┘
+                                         │ axios
+┌────────────────────────────────────────▼──────────────────────────────────────────────────┐
+│ Express API                                                                                │
+│  /api/ai/*  (search, similar, insights, recommendations, fit, cover-letter, resume-tips)   │
+│  /api/resumes/*  (upload → text extraction → enqueue)                                      │
+│  guards: requireAiEnabled · aiRateLimit (Redis) · aiDailyBudget (Redis) · validateRequest  │
+│                                                                                            │
+│   src/ai/  (LangChain chains · LangGraph graph · embeddings · prompts · cache · SQL repo)  │
+└───────┬─────────────────────────────┬──────────────────────────────┬──────────────────────┘
+        │ Prisma + raw SQL            │ BullMQ queue "ai"            │ Gemini API (chat + embeddings)
+┌───────▼──────────┐          ┌───────▼───────────┐                  │
+│ PostgreSQL 15    │          │ AI worker         │──────────────────┘
+│ + pgvector       │◄─────────│ process-job       │  (same Node process as the API, like the
+│ JobInsight,Resume│          │ process-resume    │   email worker)
+└──────────────────┘          └───────────────────┘
+           Redis: queue storage · embedding/parse/fit/tips cache · rate-limit counters
+```
+
+**Write path (async):** job create/update → `enqueueJobProcessing(jobId)` → worker computes insights (LLM) + embedding in parallel → stored in `JobInsight`. Resume upload → text extracted synchronously → `enqueueResumeProcessing(userId)` → worker extracts a structured profile (LLM) + embedding → stored in `Resume`.
+
+**Read path (sync):** search, similar jobs and recommendations are SQL over stored vectors; fit analysis, cover letter and tips call Gemini inside the request (cached where deterministic).
+
+**Idempotency:** every worker job recomputes a content hash and exits early when nothing changed, so duplicate/retried jobs are cheap and safe.
+
+### Environment variables
+
+Add to `backend/.env` (all optional — the app runs normally without them):
+
+| Variable | Default | Description |
+|---|---|---|
+| `GEMINI_API_KEY` | – | Get one at <https://aistudio.google.com/apikey>. `GOOGLE_API_KEY` is accepted as a fallback name. AI is active only if `AI_ENABLED=true` **and** a key is present. |
+| `AI_ENABLED` | `true` | Set to `'false'` to disable all AI features without removing the key. |
+| `GEMINI_CHAT_MODEL` | `gemini-3.5-flash-lite` | Model for insights, search parsing, fit, tips. |
+| `GEMINI_WRITING_MODEL` | = chat model | Model for cover letters; empty ⇒ chat model. |
+| `GEMINI_EMBEDDING_MODEL` | `gemini-embedding-2` | `gemini-embedding-2` or `gemini-embedding-001`; output is always 1536-d. |
+| `GEMINI_THINKING_LEVEL` | `low` | `minimal`/`low`/`medium`/`high`; empty ⇒ parameter not sent. |
+| `AI_REQUEST_TIMEOUT_MS` | `60000` | Per-call abort timeout. |
+| `AI_SEARCH_MIN_SCORE` | `0` | Minimum cosine similarity for AI-search results (0 = rank only; tune after backfill). |
+| `AI_DAILY_REQUEST_CAP` | `100` | Max LLM-invoking HTTP requests per UTC day. |
+| `AI_WORKER_CONCURRENCY` | `1` | Background worker concurrency. |
+| `AI_WORKER_RATE_PER_MINUTE` | `6` | Max background AI jobs started per minute (each ≈ 1 chat + 1 embedding call). |
+| `TRUST_PROXY` | empty | Reverse-proxy hop count (e.g. `1` behind Nginx); needed for correct per-IP rate limiting. |
+
+### Setup
+
+1. **Node ≥ 22.3** everywhere (local, CI, Docker image, VPS).
+2. **pgvector Postgres:** `docker compose pull postgres && docker compose up -d postgres redis`, then `npx prisma migrate deploy` (the migration creates the `vector` extension, `JobInsight`/`Resume` tables and the HNSW index). Verify: `docker exec job-board-postgres psql -U jobboard -d jobboard -c "SELECT name FROM pg_available_extensions WHERE name='vector';"`.
+3. Set `GEMINI_API_KEY` (and optionally the other variables) in `backend/.env`.
+4. `npm install` in `backend/` and `frontend/` (installs `@langchain/*`, `@google/genai`, `pdf-parse`, etc.).
+5. Start the backend (`npm run dev`) — the AI worker starts automatically when a key is present.
+6. **Backfill existing data:** `npm run ai:backfill` (processing happens in the running API process; at the default rate ~170 jobs take ~30 min).
+7. **Smoke test the live Gemini integration:** `npm run ai:smoke` (add `-- --full` to also exercise the LangGraph cover-letter/tips flows).
+
+### Cost & quota controls
+
+- Per-endpoint Redis rate limits (search 20/min, fit 10/min, cover-letter & resume-tips 5/min, etc. — see the API table in the code).
+- `AI_DAILY_REQUEST_CAP` caps LLM-invoking HTTP requests per UTC day (search, fit, cover-letter, resume-tips).
+- BullMQ limiter (`AI_WORKER_RATE_PER_MINUTE`) plus automatic queue pausing when Gemini returns 429 — nothing fails, it just slows down.
+- Embeddings and parsed search queries are cached in Redis; insight/fit/tips results are content-hash cached.
+- The Gemini **free tier is quota-limited** (per-minute and per-day, per model — check AI Studio → rate limits). Rough usage: 1 job = 1 chat + 1 embedding call; uncached search ≈ 2 calls; cover letter ≈ 3–5 calls.
+
+### Operations notes
+
+- **Reverse proxy:** cover letters can take > 60 s — add `location /api/ai/ { proxy_read_timeout 120s; }` in Nginx and set `TRUST_PROXY=1` when exactly one proxy sits in front of the API.
+- **Deploy order:** swap the Postgres image → `npx prisma migrate deploy` → set env vars → deploy → `npm run ai:backfill`.
+- **Changing the embedding model:** vectors are not comparable across models; the content hash includes the model name, so just re-run `npm run ai:backfill` (resumes need a re-upload or "Try again").
+- **Prompt/model changes:** bump `PROMPT_VERSION` in `src/ai/constants.js` for prompt changes, then re-run the backfill to regenerate insights.
+- **Quota exhausted:** AI endpoints answer 503 (the UI falls back to keyword search) and the worker pauses and resumes by itself.
+- **Turning AI off:** set `AI_ENABLED=false` or remove the key and restart. Stored data is kept.
+- **Re-running the seed:** it wipes users/jobs (cascading to `JobInsight`/`Resume`) — re-run `npm run ai:backfill` afterwards.
+
+### Privacy
+
+Resume text and job text are sent to the **Gemini API**. On the Gemini **free tier Google may use prompts and responses to improve its products** (including human review); the paid tier does not. Therefore:
+
+- Use only **fictional resumes** while developing and testing.
+- **Enable billing (paid tier) before real people upload resumes.**
+- Keep `LANGSMITH_TRACING` / `LANGCHAIN_TRACING_V2` **unset** — prompts would be sent to LangSmith.
+- Never log prompts, resume text or the API key. `DELETE /api/resumes/me` removes the stored text, profile and embedding (the Cloudinary file is kept because past applications reference it).
+
+### Scripts
+
+| Command | Description |
+|---|---|
+| `npm run ai:smoke` (`-- --full`) | Live checks against the real Gemini API (embeddings, search parsing, insights, resume profile, fit, graph) |
+| `npm run ai:backfill` (`-- --force`, `-- --limit N`) | Enqueue AI processing for existing jobs/resumes (server must be running) |
+| `npm test` | Backend unit tests (`node --test`, no network/DB required) |
 
 ---
 
