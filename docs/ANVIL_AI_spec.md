@@ -1254,7 +1254,7 @@ Changes to `pages/jobs/JobDetail.jsx` are **additions only** (existing markup/be
 - Plain derived values that need the job (e.g. `isOwner`) are computed after `const job = data;`.
 - `hideApplySection` (`location.state?.hideApply`), `isApplicant` and `isDeadlinePassed` already exist; reuse them.
 
-1. **Inside the white card, directly above the "Description" section:** `<JobAiSummary jobId={id} isOwner={…} />`, where `isOwner = user?.role === 'EMPLOYER' && user?.id === job.employer?.id` (computed after `const job = data;`). Hidden entirely when AI is disabled.
+1. **Inside the white card, directly above the "Description" section:** `<JobAiSummary jobId={id} isOwner={…} />`, where `isOwner = user?.role === 'EMPLOYER' && user?.id === job.employer?.id` (computed after `const job = data;` — in practice after the `if (!job)` early return, since `job.employer` would throw on a null job). Hidden entirely when AI is disabled.
    - `READY`: card with a `Sparkles` "AI summary" header, the summary paragraph, an "Experience level" badge (hide for `UNSPECIFIED`; labels Intern/Entry/Mid/Senior/Lead), then non-empty lists: **Key responsibilities** and **Requirements** as bullet lists, **Nice to have** and **Perks** as chips. Footnote: "AI-generated — may contain mistakes. See the full description below."
    - `PENDING`: slim box with spinner "Generating AI summary…" (polling, §15.3). If a previous summary exists, show it with a small "updating…" note.
    - `NONE`: render nothing, except for the owner: button **"Generate AI summary"** ⇒ regenerate endpoint.

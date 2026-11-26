@@ -3,6 +3,8 @@ import { useParams, Link, useLocation } from 'react-router-dom';
 import { useJob } from '../../hooks/useJobs';
 import { useApplyToJob } from '../../hooks/useApplications';
 import useAuthStore from '../../store/authStore';
+import JobAiSummary from '../../components/ai/JobAiSummary';
+import SimilarJobs from '../../components/ai/SimilarJobs';
 import toast from 'react-hot-toast';
 
 const formatBadgeText = (text) => {
@@ -98,6 +100,8 @@ export default function JobDetail() {
     );
   }
 
+  const isOwner = user?.role === 'EMPLOYER' && user?.id === job.employer?.id;
+
   return (
     <div className="min-h-screen bg-gray-50 py-8 px-4 sm:px-6 lg:px-8">
       <div className="max-w-4xl mx-auto">
@@ -150,6 +154,10 @@ export default function JobDetail() {
           )}
 
           <div className="mb-8">
+            <JobAiSummary jobId={id} isOwner={isOwner} />
+          </div>
+
+          <div className="mb-8">
             <h2 className="text-xl font-semibold text-gray-900 mb-3">Description</h2>
             <p className="text-gray-700 whitespace-pre-wrap">{job.description}</p>
           </div>
@@ -189,6 +197,8 @@ export default function JobDetail() {
             </>
           )}
         </div>
+
+        <SimilarJobs jobId={id} />
 
         {/* Apply Modal */}
         {showApplyModal && (
