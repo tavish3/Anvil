@@ -8,6 +8,10 @@ import { useMyResume } from '../../hooks/useResume';
 import useAuthStore from '../../store/authStore';
 import JobAiSummary from '../../components/ai/JobAiSummary';
 import SimilarJobs from '../../components/ai/SimilarJobs';
+import FitAnalysisCard from '../../components/ai/FitAnalysisCard';
+import ResumeTipsCard from '../../components/ai/ResumeTipsCard';
+import CoverLetterAssistant from '../../components/ai/CoverLetterAssistant';
+import ResumeRequiredNotice from '../../components/ai/ResumeRequiredNotice';
 import toast from 'react-hot-toast';
 
 const formatBadgeText = (text) => {
@@ -194,6 +198,22 @@ export default function JobDetail() {
             </div>
           )}
 
+          {isApplicant && !hideApplySection && !isDeadlinePassed && aiEnabled && (
+            <div className="mb-8">
+              <h2 className="text-xl font-semibold text-gray-900 mb-3">
+                AI tools for this job
+              </h2>
+              {savedResume === null ? (
+                <ResumeRequiredNotice />
+              ) : (
+                <>
+                  <FitAnalysisCard key={id} jobId={id} />
+                  <ResumeTipsCard key={id} jobId={id} />
+                </>
+              )}
+            </div>
+          )}
+
           {!hideApplySection && (
             <>
               {isApplicant && !isDeadlinePassed && (
@@ -273,6 +293,17 @@ export default function JobDetail() {
                       required={!usingSaved}
                     />
                   </div>
+                )}
+
+                {aiEnabled && isApplicant && (
+                  <CoverLetterAssistant
+                    jobId={id}
+                    hasResume={!!savedResume}
+                    existingText={formData.coverLetter}
+                    onGenerated={(text) =>
+                      setFormData((f) => ({ ...f, coverLetter: text }))
+                    }
+                  />
                 )}
 
                 <div className="mb-4">
